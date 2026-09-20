@@ -4,9 +4,9 @@
 
 A Tampermonkey userscript that adds improved teambuilder support for custom Pokémon Showdown formats.
 
-## Features
+## Some features
 
-For Tier Shift:
+**For Tier Shift**:
 - Automatically applies Tier Shift's base-stat boosts.
 - Displays the modified stats in the Teambuilder.
 - Supports Tier Shift stat boosts which are:
@@ -16,12 +16,12 @@ For Tier Shift:
   - PU / ZU / ZUBL / LC / NFE: +30
 - Makes stat sorting/search results account for the modified stats.
 - Supports Tier Shift AAA's dynamic banlist that is not client side for some reason.
-For Mix N Mega:
-- Calculates Pokémon stats after Mega Evolution.
-- Applies the appropriate Mega Stone stat changes.
-- Displays modified base stats in the Teambuilder.
-- Calculates final stats using the modified stats.
-- Accounts for Mix and Mega's Speed-related mechanics.
+**For Mix N Mega**:
+  - Calculates Pokémon stats after Mega Evolution.
+  - Applies the appropriate Mega Stone stat changes.
+  - Displays modified base stats in the Teambuilder.
+  - Calculates final stats using the modified stats.
+  - Accounts for Mix and Mega's Speed-related mechanics.
 **For Godly Gift**:
 - Applies the God's base stat to the appropriate team position.
 - Supports all donated stats.
