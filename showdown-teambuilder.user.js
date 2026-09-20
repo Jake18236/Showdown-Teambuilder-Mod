@@ -1,5 +1,6 @@
 // ==UserScript==
 // @name         Pokémon Showdown Teambuilder QOL
+// @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
 // @version      1.2
 // @description  Makes the Showdown Teambuilder better for some OMs
