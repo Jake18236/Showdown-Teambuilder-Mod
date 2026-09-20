@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      1.2
+// @version      1.3
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -12,6 +12,7 @@
 // ==/UserScript==
 
 // yes this is all very messy and probably has some bugs I havent found
+
 (function () {
     'use strict';
 
@@ -56,7 +57,7 @@
 
             const species = Dex.species.get(name);
 
-            // Only Pokémon bans belong in the Pokemon search.
+            // Only Pokémon bans belong in the Pokémon search.
             if (species && species.exists) {
                 banned.add(id);
             }
@@ -458,7 +459,15 @@
         return room.curTeam.format === 'gen9mixandmega';
     }
 
+    function isBadNBoostedFormat() {
+        const room = window.room;
 
+        if (!room || !room.curTeam) {
+            return false;
+        }
+
+        return room.curTeam.format === 'gen9badnboosted';
+    }
     // ============================================================
     // MIX AND MEGA BASE STATS
     // ============================================================
@@ -1082,13 +1091,120 @@
 
         const originalSort = prototype.sort;
 
+        function bnbSort(
+        results,
+         sortCol,
+         reverseSort
+        ) {
+            const sortOrder =
+                  reverseSort ? -1 : 1;
+
+            const statOrder = [
+                'hp',
+                'atk',
+                'def',
+                'spa',
+                'spd',
+                'spe'
+            ];
+
+            function getBnBStats(species) {
+                const stats =
+                      Object.assign(
+                          {},
+                          species.baseStats
+                      );
+
+                for (const stat of statOrder) {
+                    if (stats[stat] <= 70) {
+                        stats[stat] *= 2;
+                    }
+                }
+
+                return stats;
+            }
+
+            if (statOrder.includes(sortCol)) {
+                return results.sort((a, b) => {
+                    const species1 =
+                          this.dex.species.get(a[1]);
+
+                    const species2 =
+                          this.dex.species.get(b[1]);
+
+                    const stats1 =
+                          getBnBStats(species1);
+
+                    const stats2 =
+                          getBnBStats(species2);
+
+                    return (
+                        (stats2[sortCol] -
+                         stats1[sortCol]) *
+                        sortOrder
+                    );
+                });
+            }
+
+            if (sortCol === 'bst') {
+                return results.sort((a, b) => {
+                    const species1 =
+                  this.dex.species.get(a[1]);
+
+            const species2 =
+                  this.dex.species.get(b[1]);
+
+            const stats1 =
+                  getBnBStats(species1);
+
+            const stats2 =
+                  getBnBStats(species2);
+
+            const bst1 =
+                  statOrder.reduce(
+                      (total, stat) =>
+                      total + stats1[stat],
+                      0
+                  );
+
+            const bst2 =
+                  statOrder.reduce(
+                      (total, stat) =>
+                      total + stats2[stat],
+                      0
+                  );
+
+            return (
+                (bst2 - bst1) *
+                sortOrder
+            );
+        });
+    }
+
+        return originalSort.call(
+            this,
+            results,
+            sortCol,
+            reverseSort
+        );
+    }
+
+
         function tierShiftSort(
         results,
          sortCol,
          reverseSort
         ) {
+            if (isBadNBoostedFormat()) {
+                return bnbSort.call(
+                    this,
+                    results,
+                    sortCol,
+                    reverseSort
+                );
+            }
 
-            // Normal formats use normal Showdown sorting.
+            // Existing Tier Shift behavior
             if (!isTierShiftFormat()) {
                 return originalSort.call(
                     this,
@@ -1101,11 +1217,6 @@
             const sortOrder =
                   reverseSort ? -1 : 1;
 
-
-            // ----------------------------------------------------
-            // INDIVIDUAL STAT SORTING
-            // ----------------------------------------------------
-
             if (
                 [
                     'hp',
@@ -1117,7 +1228,6 @@
                 ].includes(sortCol)
             ) {
                 return results.sort((a, b) => {
-
                     const species1 =
                           this.dex.species.get(a[1]);
 
@@ -1143,15 +1253,8 @@
                 });
             }
 
-
-            // ----------------------------------------------------
-            // BST SORTING
-            // ----------------------------------------------------
-
             if (sortCol === 'bst') {
-
                 return results.sort((a, b) => {
-
                     const species1 =
                           this.dex.species.get(a[1]);
 
@@ -1170,7 +1273,6 @@
                     );
                 });
             }
-
 
             return originalSort.call(
                 this,
@@ -1241,7 +1343,11 @@
             // Normal formats
             // ----------------------------------------------------
 
-            if (!isTierShiftFormat()) {
+            // Normal formats
+            if (
+                !isTierShiftFormat() &&
+                !isBadNBoostedFormat()
+            ) {
                 return originalRenderPokemonRow.call(
                     this,
                     pokemon,
@@ -1251,7 +1357,6 @@
                     attrs
                 );
             }
-
 
             // ----------------------------------------------------
             // Error / missing Pokémon
@@ -1278,41 +1383,39 @@
                 pokemon.baseStats
             );
 
-            shiftedPokemon.baseStats.hp =
-                getShiftedStat(
-                pokemon,
-                'hp'
-            );
-
-            shiftedPokemon.baseStats.atk =
-                getShiftedStat(
-                pokemon,
-                'atk'
-            );
-
-            shiftedPokemon.baseStats.def =
-                getShiftedStat(
-                pokemon,
-                'def'
-            );
-
-            shiftedPokemon.baseStats.spa =
-                getShiftedStat(
-                pokemon,
-                'spa'
-            );
-
-            shiftedPokemon.baseStats.spd =
-                getShiftedStat(
-                pokemon,
-                'spd'
-            );
-
-            shiftedPokemon.baseStats.spe =
-                getShiftedStat(
-                pokemon,
+            const statOrder = [
+                'hp',
+                'atk',
+                'def',
+                'spa',
+                'spd',
                 'spe'
-            );
+            ];
+
+            if (isBadNBoostedFormat()) {
+
+                // Bad 'n Boosted:
+                // Double every base stat that is 70 or lower.
+                for (const stat of statOrder) {
+                    if (
+                        shiftedPokemon.baseStats[stat] <= 70
+                    ) {
+                        shiftedPokemon.baseStats[stat] *= 2;
+                    }
+                }
+
+            } else {
+
+                // Tier Shift
+                for (const stat of statOrder) {
+                    shiftedPokemon.baseStats[stat] =
+                        getShiftedStat(
+                        pokemon,
+                        stat
+                    );
+                }
+
+            }
 
 
             // Give the original renderer the temporary
@@ -1529,6 +1632,37 @@
         };
     }
 
+    function getBadNBoostedBaseStats(set, room) {
+        if (!set?.species || !room?.curTeam?.dex?.species?.get) {
+            return null;
+        }
+
+        const species =
+              room.curTeam.dex.species.get(set.species);
+
+        if (!species || !species.exists) {
+            return null;
+        }
+
+        const baseStats =
+              Object.assign({}, species.baseStats);
+
+        for (const stat of [
+            'hp',
+            'atk',
+            'def',
+            'spa',
+            'spd',
+            'spe'
+        ]) {
+            if (baseStats[stat] <= 70) {
+                baseStats[stat] *= 2;
+            }
+        }
+
+        return baseStats;
+    }
+
     function patchTeambuilderGetStat() {
         const RoomClass =
               window.TeambuilderRoom;
@@ -1570,6 +1704,7 @@
             if (
                 !isTierShiftFormat() &&
                 !isMixAndMegaFormat() &&
+                !isBadNBoostedFormat() &&
                 !isGodlyGiftFormat(this)
             ) {
                 return originalGetStat.call(
@@ -1589,7 +1724,89 @@
                 return 0;
             }
 
+            // --------------------------------------------------------
+            // BAD 'N BOOSTED
+            // --------------------------------------------------------
 
+            if (isBadNBoostedFormat()) {
+
+                const badNBoostedBaseStats =
+                      getBadNBoostedBaseStats(
+                          set,
+                          this
+                      );
+
+                if (badNBoostedBaseStats) {
+
+                    const species =
+                          this.curTeam.dex.species.get(
+                              set.species
+                          );
+
+                    if (
+                        species &&
+                        species.exists
+                    ) {
+
+                        const originalSpeciesGet =
+                              this.curTeam.dex.species.get;
+
+                        this.curTeam.dex.species.get =
+                            function (name) {
+
+                            const result =
+                                  originalSpeciesGet.call(
+                                      this,
+                                      name
+                                  );
+
+                            if (result === species) {
+
+                                const boostedSpecies =
+                                      Object.assign(
+                                          {},
+                                          result
+                                      );
+
+                                boostedSpecies.baseStats =
+                                    Object.assign(
+                                    {},
+                                    badNBoostedBaseStats
+                                );
+
+                                return boostedSpecies;
+                            }
+
+                            return result;
+                        };
+
+                        try {
+
+                            return originalGetStat.call(
+                                this,
+                                stat,
+                                set,
+                                evOverride,
+                                natureOverride
+                            );
+
+                        } finally {
+
+                            this.curTeam.dex.species.get =
+                                originalSpeciesGet;
+
+                        }
+                    }
+                }
+
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            }
             // ----------------------------------------------------
             // GODLY GIFT
             // ----------------------------------------------------
@@ -1917,11 +2134,11 @@
             if (
                 !isTierShiftFormat() &&
                 !isMixAndMegaFormat() &&
+                !isBadNBoostedFormat() &&
                 !isGodlyGiftFormat(this)
             ) {
                 return result;
             }
-
 
             const set =
                   this.curSet;
@@ -1994,6 +2211,14 @@
 
                 baseStats =
                     getMixAndMegaBaseStats(set);
+
+            } else if (isBadNBoostedFormat()) {
+
+                baseStats =
+                    getBadNBoostedBaseStats(
+                    set,
+                    this
+                );
 
             } else {
 
@@ -2275,9 +2500,11 @@
         parseGodlyGiftRestricted,
         isTierShiftFormat,
         isMixAndMegaFormat,
+        isBadNBoostedFormat,
         isGodlyGiftFormat,
         requestTSABanlist,
         requestGGBanlist,
+        getBadNBoostedBaseStats,
         patch: patchEverything
     };
 
