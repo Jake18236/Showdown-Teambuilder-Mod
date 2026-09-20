@@ -1,5 +1,3 @@
-# Showdown-Teambuilder-Mod
-
 # Pokémon Showdown Teambuilder Mod
 
 A Tampermonkey userscript that adds improved teambuilder support for custom Pokémon Showdown formats.
