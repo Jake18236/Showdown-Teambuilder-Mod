@@ -36,8 +36,8 @@ A Tampermonkey userscript that adds improved teambuilder support for custom Pok√
 3. Click **Install** in Tampermonkey.
 4. Open Pok√©mon Showdown.
 
-**[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js))**
-https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
+## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
+
 
 ## Note
 
