@@ -1,6 +1,6 @@
 # Pokémon Showdown Teambuilder Mod
 
-A Tampermonkey userscript that adds improved teambuilder support for custom Pokémon Showdown formats.
+A Tampermonkey userscript that adds some features that always annoyed me. Mostly for OMs.
 
 ## Some features
 
