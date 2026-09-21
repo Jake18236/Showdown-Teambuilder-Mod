@@ -27,7 +27,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Supports all donated stats.
 - Updates displayed base stats.
 - Prevents additional Restricted Pokémon from appearing as legal team members once a God has been selected.
-## Installation
+## Installation for Chrome, Firefox, Edge
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. Click the installation link below.
@@ -36,7 +36,18 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 ## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
 
+## Installation for Safari (MacOS and iOS)
 
-## Note
+1. Download Userscripts on the App Store
+2. Enable the extension
+3. Click the link and install the code as an userscript.
+
+## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
+
+
+
+
+
 
 This is a client-side script.
+  
