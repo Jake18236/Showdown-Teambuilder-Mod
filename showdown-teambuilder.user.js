@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      1.3
+// @version      1.4
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -433,11 +433,25 @@
     // ============================================================
     // FORMAT DETECTION
     // ============================================================
+    // ============================================================
+    // FORMAT DETECTION
+    // ============================================================
+
+    function getActiveTeambuilderRoom() {
+        return (
+            window.app?.rooms?.teambuilder ||
+            (
+                window.room?.curTeam
+                ? window.room
+                : null
+            )
+        );
+    }
 
     function isTierShiftFormat() {
-        const room = window.room;
+        const room = getActiveTeambuilderRoom();
 
-        if (!room || !room.curTeam) {
+        if (!room?.curTeam) {
             return false;
         }
 
@@ -450,9 +464,9 @@
     }
 
     function isMixAndMegaFormat() {
-        const room = window.room;
+        const room = getActiveTeambuilderRoom();
 
-        if (!room || !room.curTeam) {
+        if (!room?.curTeam) {
             return false;
         }
 
@@ -460,9 +474,9 @@
     }
 
     function isBadNBoostedFormat() {
-        const room = window.room;
+        const room = getActiveTeambuilderRoom();
 
-        if (!room || !room.curTeam) {
+        if (!room?.curTeam) {
             return false;
         }
 
@@ -2082,7 +2096,172 @@
         return true;
     }
 
+    // ============================================================
+    // PATCH: TIER SHIFT BATTLE HOVER STATS
+    // ============================================================
+    function diagnoseSpeedRangePatch() {
+        console.log('[Tier Shift] Speed range diagnostic started');
 
+        console.log(
+            'window keys containing tooltip:',
+            Object.keys(window).filter(key =>
+                                       /tooltip|battle/i.test(key)
+                                      )
+        );
+
+        console.log(
+            'window keys containing speed:',
+            Object.keys(window).filter(key =>
+                                       /speed|stat/i.test(key)
+                                      )
+        );
+
+        console.log(
+            'Existing global BattleTooltips:',
+            window.BattleTooltips
+        );
+
+        console.log(
+            'Existing global BattleRoom:',
+            window.BattleRoom
+        );
+
+        console.log(
+            'Existing global Battle:',
+            window.Battle
+        );
+    }
+
+    diagnoseSpeedRangePatch();
+
+    function patchBattleStatGuesser() {
+        const Guesser = window.BattleStatGuesser;
+        if (!Guesser?.prototype) return false;
+
+        const prototype = Guesser.prototype;
+
+        if (typeof prototype.getStat !== 'function') return false;
+
+        if (prototype.getStat.__tierShiftBattlePatched) {
+            return true;
+        }
+
+        const originalGetStat = prototype.getStat;
+
+        prototype.getStat = function (stat, set, evOverride, natureOverride) {
+            const formatid = String(this.formatid || '').toLowerCase();
+
+            const isTierShift =
+                  formatid.includes('tiershift');
+
+            if (
+                !isTierShift ||
+                !set?.species ||
+                !this.dex?.species?.get
+            ) {
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            }
+
+            const speciesDex = this.dex.species;
+            const originalSpeciesGet = speciesDex.get;
+
+            const originalSpecies = originalSpeciesGet.call(
+                speciesDex,
+                set.species
+            );
+
+            if (!originalSpecies?.exists) {
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            }
+
+            if (stat === 'hp') {
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            }
+
+            const boost = getTierShiftBoost(originalSpecies.tier);
+
+            if (!boost) {
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            }
+
+            const shiftedSpecies = Object.assign({}, originalSpecies);
+
+            shiftedSpecies.baseStats = Object.assign(
+                {},
+                originalSpecies.baseStats
+            );
+
+            for (const statName of ['atk', 'def', 'spa', 'spd', 'spe']) {
+                shiftedSpecies.baseStats[statName] += boost;
+            }
+
+            console.log('[Tier Shift Battle]', {
+                species: originalSpecies.name,
+                tier: originalSpecies.tier,
+                stat,
+                originalBaseStat: originalSpecies.baseStats[stat],
+                boost,
+                shiftedBaseStat: shiftedSpecies.baseStats[stat],
+                formatid: this.formatid
+            });
+
+            speciesDex.get = function (name) {
+                const result = originalSpeciesGet.call(
+                    speciesDex,
+                    name
+                );
+
+                if (result === originalSpecies) {
+                    return shiftedSpecies;
+                }
+
+                return result;
+            };
+
+            try {
+                return originalGetStat.call(
+                    this,
+                    stat,
+                    set,
+                    evOverride,
+                    natureOverride
+                );
+            } finally {
+                speciesDex.get = originalSpeciesGet;
+            }
+        };
+
+        prototype.getStat.__tierShiftBattlePatched = true;
+        prototype.getStat.__tierShiftBattleOriginal = originalGetStat;
+
+        console.log('[Tier Shift] BattleStatGuesser.getStat patched');
+
+        return true;
+    }
     // ============================================================
     // PATCH: TEAMBUILDER STAT FORM
     // ============================================================
@@ -2411,6 +2590,106 @@
         return true;
     }
 
+    function patchBattleTooltipSpeedRange() {
+        if (!window.app?.rooms) return false;
+
+        let patchedAny = false;
+
+        for (const room of Object.values(window.app.rooms)) {
+            const tooltips = room?.tooltips;
+
+            if (
+                !tooltips ||
+                tooltips.constructor?.name !== 'BattleTooltips' ||
+                typeof tooltips.getSpeedRange !== 'function'
+            ) {
+                continue;
+            }
+
+            const proto = Object.getPrototypeOf(tooltips);
+
+            if (proto.__tierShiftSpeedRangePatched) {
+                patchedAny = true;
+                continue;
+            }
+
+            const originalGetSpeedRange = proto.getSpeedRange;
+
+            proto.getSpeedRange = function (pokemon, ...args) {
+                let originalGetSpecies = null;
+                let speciesWasReplaced = false;
+
+                try {
+                    const battle = this.battle;
+                    const rules = battle?.rules || {};
+
+                    const isTierShift =
+                          Object.keys(rules).some(rule =>
+                                                  String(rule).toLowerCase().includes('tier shift')
+                                                 ) ||
+                          String(battle?.format?.id || '')
+                    .toLowerCase()
+                    .includes('tiershift');
+
+                    if (!isTierShift || !pokemon?.getSpecies) {
+                        return originalGetSpeedRange.call(this, pokemon, ...args);
+                    }
+
+                    originalGetSpecies = pokemon.getSpecies;
+                    const originalSpecies = originalGetSpecies.call(pokemon);
+
+                    if (!originalSpecies?.baseStats) {
+                        return originalGetSpeedRange.call(this, pokemon, ...args);
+                    }
+
+                    const boost =
+                          typeof getTierShiftBoost === 'function'
+                    ? getTierShiftBoost(originalSpecies.tier)
+                    : 0;
+
+                    if (!boost) {
+                        return originalGetSpeedRange.call(this, pokemon, ...args);
+                    }
+
+                    const shiftedSpecies = {
+                        ...originalSpecies,
+                        baseStats: {
+                            ...originalSpecies.baseStats,
+                            spe: originalSpecies.baseStats.spe + boost
+                        }
+                    };
+
+                    pokemon.getSpecies = function () {
+                        return shiftedSpecies;
+                    };
+
+                    speciesWasReplaced = true;
+
+                    return originalGetSpeedRange.call(this, pokemon, ...args);
+                } finally {
+                    if (
+                        speciesWasReplaced &&
+                        pokemon &&
+                        originalGetSpecies
+                    ) {
+                        pokemon.getSpecies = originalGetSpecies;
+                    }
+                }
+            };
+
+            proto.__tierShiftSpeedRangePatched = true;
+            patchedAny = true;
+
+            console.log(
+                '[Tier Shift] Patched BattleTooltips.getSpeedRange'
+            );
+        }
+
+        return patchedAny;
+    }
+
+    patchBattleTooltipSpeedRange();
+
     // ============================================================
     // PATCH EVERYTHING
     // ============================================================
@@ -2421,10 +2700,13 @@
         const searchPatched = patchBattlePokemonSearch();
         const rendererPatched = patchBattleSearchRenderer();
         const statPatched = patchTeambuilderGetStat();
+        const battleStatPatched = patchBattleStatGuesser();
         const statFormPatched = patchTeambuilderStatForm();
         const statSliderPatched = patchTeambuilderStatSlider();
         const tsaReceiverPatched = patchTSABanlistReceiver();
         const godlyGiftStatGuesserPatched = patchGodlyGiftStatGuesser();
+        const speedRangePatched = patchBattleTooltipSpeedRange();
+
         if (isGodlyGiftFormat(window.room)) {
             requestGGBanlist();
         }
@@ -2434,6 +2716,7 @@
             godlyGiftLegalityPatched &&
             godlyGiftStatGuesserPatched &&
             searchPatched &&
+            speedRangePatched &&
             rendererPatched &&
             statPatched &&
             statFormPatched &&
@@ -2504,6 +2787,7 @@
         isGodlyGiftFormat,
         requestTSABanlist,
         requestGGBanlist,
+        patchBattleStatGuesser,
         getBadNBoostedBaseStats,
         patch: patchEverything
     };
