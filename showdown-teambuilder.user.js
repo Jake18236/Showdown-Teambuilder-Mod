@@ -10,7 +10,7 @@
 // @updateURL    https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // ==/UserScript==
-
+//
 // yes this is all very messy and probably has some bugs I havent found
 
 (function () {
@@ -2590,103 +2590,205 @@
         return true;
     }
 
-    function patchBattleTooltipSpeedRange() {
-        if (!window.app?.rooms) return false;
+function patchBattleTooltipSpeedRange() {
+    if (!window.app?.rooms) return false;
 
-        let patchedAny = false;
+    let patchedAny = false;
 
-        for (const room of Object.values(window.app.rooms)) {
-            const tooltips = room?.tooltips;
+    for (const room of Object.values(window.app.rooms)) {
+        const tooltips = room?.tooltips;
 
-            if (
-                !tooltips ||
-                tooltips.constructor?.name !== 'BattleTooltips' ||
-                typeof tooltips.getSpeedRange !== 'function'
-            ) {
-                continue;
-            }
-
-            const proto = Object.getPrototypeOf(tooltips);
-
-            if (proto.__tierShiftSpeedRangePatched) {
-                patchedAny = true;
-                continue;
-            }
-
-            const originalGetSpeedRange = proto.getSpeedRange;
-
-            proto.getSpeedRange = function (pokemon, ...args) {
-                let originalGetSpecies = null;
-                let speciesWasReplaced = false;
-
-                try {
-                    const battle = this.battle;
-                    const rules = battle?.rules || {};
-
-                    const isTierShift =
-                          Object.keys(rules).some(rule =>
-                                                  String(rule).toLowerCase().includes('tier shift')
-                                                 ) ||
-                          String(battle?.format?.id || '')
-                    .toLowerCase()
-                    .includes('tiershift');
-
-                    if (!isTierShift || !pokemon?.getSpecies) {
-                        return originalGetSpeedRange.call(this, pokemon, ...args);
-                    }
-
-                    originalGetSpecies = pokemon.getSpecies;
-                    const originalSpecies = originalGetSpecies.call(pokemon);
-
-                    if (!originalSpecies?.baseStats) {
-                        return originalGetSpeedRange.call(this, pokemon, ...args);
-                    }
-
-                    const boost =
-                          typeof getTierShiftBoost === 'function'
-                    ? getTierShiftBoost(originalSpecies.tier)
-                    : 0;
-
-                    if (!boost) {
-                        return originalGetSpeedRange.call(this, pokemon, ...args);
-                    }
-
-                    const shiftedSpecies = {
-                        ...originalSpecies,
-                        baseStats: {
-                            ...originalSpecies.baseStats,
-                            spe: originalSpecies.baseStats.spe + boost
-                        }
-                    };
-
-                    pokemon.getSpecies = function () {
-                        return shiftedSpecies;
-                    };
-
-                    speciesWasReplaced = true;
-
-                    return originalGetSpeedRange.call(this, pokemon, ...args);
-                } finally {
-                    if (
-                        speciesWasReplaced &&
-                        pokemon &&
-                        originalGetSpecies
-                    ) {
-                        pokemon.getSpecies = originalGetSpecies;
-                    }
-                }
-            };
-
-            proto.__tierShiftSpeedRangePatched = true;
-            patchedAny = true;
-
-            console.log(
-                '[Tier Shift] Patched BattleTooltips.getSpeedRange'
-            );
+        if (
+            !tooltips ||
+            tooltips.constructor?.name !== 'BattleTooltips' ||
+            typeof tooltips.getSpeedRange !== 'function'
+        ) {
+            continue;
         }
 
-        return patchedAny;
+        const proto = Object.getPrototypeOf(tooltips);
+
+        if (proto.__speedRangePatched) {
+            patchedAny = true;
+            continue;
+        }
+
+        const originalGetSpeedRange = proto.getSpeedRange; 
+
+        proto.getSpeedRange = function (pokemon, ...args) {
+            console.log('[SpeedRange HOOK]', pokemon, pokemon?.item);
+            let originalGetSpecies = null;
+            let speciesWasReplaced = false;
+
+            try {
+                const battle = this.battle;
+                const rules = battle?.rules || {};
+
+                const isTierShift =
+                    Object.keys(rules).some(rule =>
+                        String(rule).toLowerCase().includes('tier shift')
+                    ) ||
+                    String(battle?.format?.id || '')
+                        .toLowerCase()
+                        .includes('tiershift');
+
+                const isMixAndMega =
+                    String(battle?.format?.id || '')
+                        .toLowerCase()
+                        .includes('mixandmega');
+
+                if (!pokemon?.getSpecies) {
+                    return originalGetSpeedRange.call(this, pokemon, ...args);
+                }
+
+                originalGetSpecies = pokemon.getSpecies;
+                const originalSpecies =
+                    originalGetSpecies.call(pokemon);
+
+                if (!originalSpecies?.baseStats) {
+                    return originalGetSpeedRange.call(this, pokemon, ...args);
+                }
+
+                // TIER SHIFT
+                if (isTierShift) {
+                    const boost =
+                        typeof getTierShiftBoost === 'function'
+                            ? getTierShiftBoost(originalSpecies.tier)
+                            : 0;
+
+                    if (boost) {
+                        const shiftedSpecies = {
+                            ...originalSpecies,
+                            baseStats: {
+                                ...originalSpecies.baseStats,
+                                spe:
+                                    originalSpecies.baseStats.spe +
+                                    boost
+                            }
+                        };
+
+                        pokemon.getSpecies = function () {
+                            return shiftedSpecies;
+                        };
+
+                        speciesWasReplaced = true;
+
+                        return originalGetSpeedRange.call(
+                            this,
+                            pokemon,
+                            ...args
+                        );
+                    }
+                }
+
+// MIX AND MEGA
+// MIX AND MEGA
+if (pokemon.item) {
+    const item = this.battle.dex.items.get(pokemon.item);
+
+    console.log('[MnM DEBUG]', {
+        item: pokemon.item,
+        itemData: item,
+        megaStone: item?.megaStone,
+    });
+
+    if (item?.megaStone) {
+        const formeName = Object.values(item.megaStone)[0];
+        const formeSpecies =
+            this.battle.dex.species.get(formeName);
+
+        console.log('[MnM DEBUG] forme', {
+            formeName,
+            formeSpecies,
+            originalSpecies,
+        });
+
+        if (formeSpecies?.exists) {
+            let baseSpecies = formeSpecies;
+
+            if (formeSpecies.name === 'Zygarde-Mega') {
+                baseSpecies =
+                    this.battle.dex.species.get('Zygarde-Complete');
+
+            } else if (formeSpecies.isMega && formeSpecies.battleOnly) {
+                baseSpecies =
+                    this.battle.dex.species.get(
+                        Array.isArray(formeSpecies.battleOnly)
+                            ? formeSpecies.battleOnly[0]
+                            : formeSpecies.battleOnly
+                    );
+
+            } else if (formeSpecies.baseSpecies) {
+                baseSpecies =
+                    this.battle.dex.species.get(
+                        formeSpecies.baseSpecies
+                    );
+            }
+
+            console.log('[MnM DEBUG] stats', {
+                originalSpeed: originalSpecies.baseStats.spe,
+                formeSpeed: formeSpecies.baseStats.spe,
+                baseSpeed: baseSpecies?.baseStats?.spe,
+                delta:
+                    formeSpecies.baseStats.spe -
+                    baseSpecies?.baseStats?.spe,
+            });
+
+            if (baseSpecies?.exists) {
+                const mixedSpecies = {
+                    ...originalSpecies,
+                    baseStats: {
+                        ...originalSpecies.baseStats,
+                        spe:
+                            originalSpecies.baseStats.spe +
+                            formeSpecies.baseStats.spe -
+                            baseSpecies.baseStats.spe
+                    }
+                };
+
+                pokemon.getSpecies = function () {
+                    return mixedSpecies;
+                };
+
+                speciesWasReplaced = true;
+
+                return originalGetSpeedRange.call(
+                    this,
+                    pokemon,
+                    ...args
+                );
+            }
+        }
     }
+}
+
+                return originalGetSpeedRange.call(
+                    this,
+                    pokemon,
+                    ...args
+                );
+
+            } finally {
+                if (
+                    speciesWasReplaced &&
+                    pokemon &&
+                    originalGetSpecies
+                ) {
+                    pokemon.getSpecies = originalGetSpecies;
+                }
+            }
+        };
+
+        proto.__speedRangePatched = true;
+        patchedAny = true;
+
+        console.log(
+            '[Tier Shift] Patched BattleTooltips.getSpeedRange'
+        );
+    }
+
+    return patchedAny;
+}
 
     patchBattleTooltipSpeedRange();
 
@@ -2792,4 +2894,7 @@
         patch: patchEverything
     };
 
-})();
+
+
+
+    
