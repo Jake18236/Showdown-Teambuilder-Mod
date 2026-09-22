@@ -2894,7 +2894,7 @@ if (pokemon.item) {
         patch: patchEverything
     };
 
-
+})();
 
 
     
