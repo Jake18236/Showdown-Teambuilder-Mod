@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      1.4
+// @version      2.0
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -11,2890 +11,1023 @@
 // @downloadURL  https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // ==/UserScript==
 //
-// yes this is all very messy and probably has some bugs I havent found
+// Adds Teambuilder QOL for four "Other Metagame" stat-changing formats:
+//   - Tier Shift        (gen9tiershift / gen9tiershiftaaa)
+//   - Mix and Mega       (gen9mixandmega)
+//   - Godly Gift         (gen9godlygift)
+//   - Bad 'n Boosted     (gen9badnboosted)
+//
+// The script works by patching a handful of Showdown client methods so that,
+// whenever they ask the dex for a Pokémon's species, they transparently get
+// back a version whose baseStats already reflect the active format's rules.
 
 (function () {
     'use strict';
 
-    console.log('[Tier Shift] Userscript loaded');
+    const LOG = '[Teambuilder QOL]';
 
-    let tsaBannedPokemon = new Set();
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
+    const BOOSTABLE_STATS = STATS.slice(1); // everything but hp
+
+    const MOD = {
+        TIER_SHIFT: 'tierShift',
+        MIX_AND_MEGA: 'mixAndMega',
+        BAD_N_BOOSTED: 'badNBoosted',
+        GODLY_GIFT: 'godlyGift',
+    };
+
+    const FORMAT_MOD_MAP = {
+        gen9tiershift: MOD.TIER_SHIFT,
+        gen9tiershiftaaa: MOD.TIER_SHIFT,
+        gen9mixandmega: MOD.MIX_AND_MEGA,
+        gen9badnboosted: MOD.BAD_N_BOOSTED,
+        // gen9godlygift and gen9tiershiftaaa are handled separately below
+        // (they each need a side effect: fetching their server-side banlist).
+    };
+
+    // ============================================================
+    // SHARED STATE
+    // ============================================================
+
+    let tsaBanlist = new Set();
     let tsaBanlistLoaded = false;
+    let tsaBanlistRequestSent = false;
+
     let godlyGiftRestricted = new Set();
     let godlyGiftRestrictedLoaded = false;
     let godlyGiftRequestSent = false;
-    // for some ungodly reason, TSAAA banlists are not client side like EVERY OTHER FORMAT. IDK WHY BRUH
-    function requestTSABanlist() {
-        if (tsaBanlistLoaded) return;
 
-        // Send /tier tiershiftaaa to the server.
+    // ============================================================
+    // ROOM / FORMAT HELPERS
+    // ============================================================
+
+    function getTeambuilderRoom() {
+        return window.app?.rooms?.teambuilder || null;
+    }
+
+    function getActiveTeambuilderRoom() {
+        return getTeambuilderRoom() || (window.room?.curTeam ? window.room : null);
+    }
+
+    // Godly Gift's Restricted list and Tier Shift AAA's banlist both live
+    // server-side only (they aren't shipped in the client's dex data), so
+    // checking "is this format active" also kicks off that fetch the first
+    // time it's needed.
+    function isGodlyGiftFormat(room) {
+        const active = room?.curTeam?.format === 'gen9godlygift';
+
+        if (active && !godlyGiftRestrictedLoaded && !godlyGiftRequestSent) {
+            requestGGBanlist();
+        }
+
+        return active;
+    }
+
+    function isTierShiftAAAFormat(room) {
+        const active = room?.curTeam?.format === 'gen9tiershiftaaa';
+
+        if (active && !tsaBanlistLoaded && !tsaBanlistRequestSent) {
+            requestTSABanlist();
+        }
+
+        return active;
+    }
+
+    function getActiveMod(room = getActiveTeambuilderRoom()) {
+        const format = room?.curTeam?.format;
+
+        if (format === 'gen9godlygift') {
+            isGodlyGiftFormat(room);
+            return MOD.GODLY_GIFT;
+        }
+
+        if (format === 'gen9tiershiftaaa') {
+            isTierShiftAAAFormat(room);
+        }
+
+        return FORMAT_MOD_MAP[format] || null;
+    }
+
+    // ============================================================
+    // SERVER BANLISTS (Tier Shift AAA / Godly Gift)
+    // ============================================================
+
+    function requestTSABanlist() {
+        if (tsaBanlistLoaded || tsaBanlistRequestSent) return;
+        if (!window.app || typeof app.send !== 'function') return;
+
+        tsaBanlistRequestSent = true;
         app.send('/tier tiershiftaaa');
     }
 
-    function parseTSABanlist(html) {
-        if (!html || !html.includes('[Gen 9] Tier Shift AAA')) {
-            return false;
-        }
-
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-
-        const text = doc.body.textContent || '';
-
-        const bansMatch = text.match(/Bans\s*-\s*(.*)/s);
-        if (!bansMatch) return false;
-
-        const bans = bansMatch[1]
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean);
-
-        const banned = new Set();
-
-        for (const name of bans) {
-            const id = Dex.species.get(name).id;
-
-            if (!id) continue;
-
-            const species = Dex.species.get(name);
-
-            // Only Pokémon bans belong in the Pokémon search.
-            if (species && species.exists) {
-                banned.add(id);
-            }
-        }
-
-        tsaBannedPokemon = banned;
-        tsaBanlistLoaded = true;
-
-        console.log(
-            '[Tier Shift AAA] Loaded server banlist:',
-            [...tsaBannedPokemon]
-        );
-
-        return true;
-    }
-
     function requestGGBanlist() {
-        if (
-            godlyGiftRestrictedLoaded ||
-            godlyGiftRequestSent
-        ) {
-            return;
-        }
-
-        if (
-            !window.app ||
-            typeof app.send !== 'function'
-        ) {
-            return;
-        }
+        if (godlyGiftRestrictedLoaded || godlyGiftRequestSent) return;
+        if (!window.app || typeof app.send !== 'function') return;
 
         godlyGiftRequestSent = true;
-
-        // Request the current Godly Gift rules and Restricted list.
         app.send('/tier godly gift');
     }
 
+    // Both banlists come back as an HTML `/raw` blob with a
+    // "<Section> - a, b, c" line buried in the text content.
+    function parseNameListFromHtml(html, sectionHeader, listLabel) {
+        if (!html || !html.includes(sectionHeader)) return null;
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const text = doc.body.textContent || '';
+        const match = text.match(new RegExp(`${listLabel}\\s*-\\s*(.*)`, 's'));
+
+        if (!match) return null;
+
+        const ids = new Set();
+
+        for (const name of match[1].split(',').map((n) => n.trim()).filter(Boolean)) {
+            const species = Dex.species.get(name);
+            if (species?.exists) ids.add(species.id);
+        }
+
+        return ids;
+    }
+
+    function parseTSABanlist(html) {
+        const banned = parseNameListFromHtml(html, '[Gen 9] Tier Shift AAA', 'Bans');
+        if (!banned) return false;
+
+        tsaBanlist = banned;
+        tsaBanlistLoaded = true;
+        console.log(LOG, 'Loaded Tier Shift AAA banlist:', [...tsaBanlist]);
+        return true;
+    }
+
     function parseGodlyGiftRestricted(html) {
-        if (
-            !html ||
-            !html.includes('[Gen 9] Godly Gift')
-        ) {
-            return false;
-        }
+        const restricted = parseNameListFromHtml(html, '[Gen 9] Godly Gift', 'Restricted');
+        if (!restricted) return false;
 
-        const doc =
-              new DOMParser().parseFromString(
-                  html,
-                  'text/html'
-              );
+        godlyGiftRestricted = restricted;
+        godlyGiftRestrictedLoaded = true;
+        console.log(LOG, 'Loaded Godly Gift Restricted list:', [...godlyGiftRestricted]);
+        return true;
+    }
 
-        const text =
-              doc.body.textContent || '';
+    // ============================================================
+    // GENERIC PATCH HELPERS
+    // ============================================================
 
-        const restrictedMatch =
-              text.match(
-                  /Restricted\s*-\s*(.*)$/s
-              );
+    // Wraps target[key] exactly once. `wrap(original)` must return the
+    // replacement function; it's tagged so re-running patchEverything() is
+    // always a safe no-op.
+    function patchMethod(target, key, tag, wrap) {
+        if (!target || typeof target[key] !== 'function') return false;
+        if (target[key][tag]) return true;
 
-        if (!restrictedMatch) {
-            console.warn(
-                '[Godly Gift] Could not find Restricted list'
-            );
+        const original = target[key];
+        const wrapped = wrap(original);
 
-            return false;
-        }
-
-        const restrictedNames =
-              restrictedMatch[1]
-        .split(',')
-        .map(name => name.trim())
-        .filter(Boolean);
-
-        const restricted =
-              new Set();
-
-        for (const name of restrictedNames) {
-
-            const species =
-                  Dex.species.get(name);
-
-            if (
-                species &&
-                species.exists
-            ) {
-                restricted.add(species.id);
-            }
-        }
-
-        godlyGiftRestricted =
-            restricted;
-
-        godlyGiftRestrictedLoaded =
-            true;
-
-        window.godlyGiftRestricted =
-            godlyGiftRestricted;
-
-        console.log(
-            '[Godly Gift] Loaded Restricted Pokémon:',
-            [...godlyGiftRestricted]
-        );
+        wrapped[tag] = true;
+        wrapped.__original = original;
+        target[key] = wrapped;
 
         return true;
     }
 
-    function getGodlyGiftIllegalIds(room) {
-        if (!isGodlyGiftFormat(room)) {
-            return new Set();
+    function findPrototypeWithMethod(obj, methodName) {
+        let proto = obj;
+        while (proto && typeof proto[methodName] !== 'function') {
+            proto = Object.getPrototypeOf(proto);
         }
-
-        const team =
-              room?.curSetList;
-
-        if (!Array.isArray(team)) {
-            return new Set();
-        }
-
-        const restricted =
-              window.godlyGiftRestricted;
-
-        if (
-            !restricted ||
-            !restricted.size
-        ) {
-            return new Set();
-        }
-
-        // Find the God currently on the team.
-        let godId = null;
-
-        for (const set of team) {
-            if (!set?.species) {
-                continue;
-            }
-
-            const species =
-                  room.curTeam.dex.species.get(
-                      set.species
-                  );
-
-            if (
-                species &&
-                species.exists
-            ) {
-                const baseSpecies =
-                      species.baseSpecies
-                ? room.curTeam.dex.species.get(
-                    species.baseSpecies
-                )
-                : species;
-
-                if (
-                    baseSpecies &&
-                    baseSpecies.exists &&
-                    restricted.has(baseSpecies.id)
-                ) {
-                    godId = baseSpecies.id;
-                    break;
-                }
-            }
-        }
-
-        // No God yet.
-        if (!godId) {
-            return new Set();
-        }
-
-        // All other Restricted Pokémon are illegal.
-        const illegal = new Set();
-
-        for (const id of restricted) {
-            if (id !== godId) {
-                illegal.add(id);
-            }
-        }
-
-        return illegal;
+        return proto || null;
     }
 
-    function isGodlyGiftRestrictedSpecies(species) {
-        if (
-            !species ||
-            !species.exists
-        ) {
-            return false;
-        }
+    // Temporarily makes `dex.species.get` return `targetSpecies` with
+    // `baseStats` swapped in whenever it's asked for that exact species,
+    // for the duration of `fn`. This is how every mod fakes a stat change
+    // without touching Showdown's real dex data.
+    function withModifiedSpecies(dex, targetSpecies, baseStats, fn) {
+        if (!dex?.species?.get || !targetSpecies) return fn();
 
-        if (
-            godlyGiftRestricted.has(species.id)
-        ) {
-            return true;
-        }
+        const originalGet = dex.species.get;
+        const modified = Object.assign({}, targetSpecies, {
+            baseStats: Object.assign({}, baseStats),
+        });
 
-        if (
-            species.baseSpecies
-        ) {
-            const baseSpecies =
-                  Dex.species.get(
-                      species.baseSpecies
-                  );
-
-            if (
-                baseSpecies &&
-                baseSpecies.exists &&
-                godlyGiftRestricted.has(
-                    baseSpecies.id
-                )
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    function patchGodlyGiftStatGuesser() {
-        const Guesser = window.BattleStatGuesser;
-
-        if (!Guesser || !Guesser.prototype) {
-            return false;
-        }
-
-        if (typeof Guesser.prototype.guess !== 'function') {
-            return false;
-        }
-
-        if (Guesser.prototype.guess.__godlyGiftPatched) {
-            return true;
-        }
-
-        const prototype = Guesser.prototype;
-        const originalGuess = prototype.guess;
-
-        prototype.guess = function (set) {
-            const room =
-                  window.app?.rooms?.teambuilder;
-
-            if (
-                !room ||
-                !isGodlyGiftFormat(room) ||
-                !set?.species ||
-                !this.dex?.species?.get
-            ) {
-                return originalGuess.call(
-                    this,
-                    set
-                );
-            }
-
-            const godlyGiftStat =
-                  getGodlyGiftBaseStats(
-                      room,
-                      set
-                  );
-
-            if (!godlyGiftStat) {
-                return originalGuess.call(
-                    this,
-                    set
-                );
-            }
-
-            const originalGet =
-                  this.dex.species.get;
-
-            const originalSpecies =
-                  originalGet.call(
-                      this.dex.species,
-                      set.species
-                  );
-
-            if (!originalSpecies?.exists) {
-                return originalGuess.call(
-                    this,
-                    set
-                );
-            }
-
-            const giftedSpecies =
-                  Object.assign(
-                      {},
-                      originalSpecies
-                  );
-
-            giftedSpecies.baseStats =
-                Object.assign(
-                {},
-                originalSpecies.baseStats
-            );
-
-            giftedSpecies.baseStats[
-                godlyGiftStat.stat
-            ] =
-                godlyGiftStat.value;
-
-            this.dex.species.get =
-                function (name) {
-                const result =
-                      originalGet.call(
-                          this,
-                          name
-                      );
-
-                if (
-                    result === originalSpecies
-                ) {
-                    return giftedSpecies;
-                }
-
-                return result;
-            };
-
-            try {
-                return originalGuess.call(
-                    this,
-                    set
-                );
-            } finally {
-                this.dex.species.get =
-                    originalGet;
-            }
+        dex.species.get = function (name) {
+            const result = originalGet.call(this, name);
+            return result === targetSpecies ? modified : result;
         };
 
-        prototype.guess.__godlyGiftPatched =
-            true;
-
-        prototype.guess.__godlyGiftOriginal =
-            originalGuess;
-
-        console.log(
-            '[Godly Gift] Stat optimizer patched'
-        );
-
-        return true;
+        try {
+            return fn();
+        } finally {
+            dex.species.get = originalGet;
+        }
     }
+
+    function withSpeciesBaseStats(dex, speciesId, baseStats, fn) {
+        const species = dex?.species?.get?.(speciesId);
+        if (!species?.exists || !baseStats) return fn();
+        return withModifiedSpecies(dex, species, baseStats, fn);
+    }
+
+    // Same idea as withModifiedSpecies, but for call sites that read the
+    // species via `pokemon.getSpecies()` instead of `dex.species.get()`.
+    function withOverriddenGetSpecies(pokemon, shiftedSpecies, fn) {
+        if (!pokemon?.getSpecies) return fn();
+
+        const original = pokemon.getSpecies;
+        pokemon.getSpecies = () => shiftedSpecies;
+
+        try {
+            return fn();
+        } finally {
+            pokemon.getSpecies = original;
+        }
+    }
+
     // ============================================================
-    // TIER SHIFT RULES
+    // TIER SHIFT
     // ============================================================
 
     function getTierShiftBoost(tier) {
         switch (tier) {
-                // UU / RUBL: +15
             case 'UU':
             case 'RUBL':
                 return 15;
-
-                // RU / NUBL: +20
             case 'RU':
             case 'NUBL':
                 return 20;
-
-                // NU / PUBL: +25
             case 'NU':
             case 'PUBL':
                 return 25;
-
-                // PU / ZU: +30
             case 'PU':
             case 'ZU':
             case 'ZUBL':
             case 'LC':
             case 'NFE':
                 return 30;
-
-                // Anything else
             default:
                 return 0;
         }
     }
 
+    // Returns a full modified baseStats object, or null if this tier isn't
+    // boosted (so callers can fall back to unmodified behavior).
+    function tierShiftModifiedStats(species) {
+        if (!species?.baseStats) return null;
 
-    // ============================================================
-    // FORMAT DETECTION
-    // ============================================================
-    // ============================================================
-    // FORMAT DETECTION
-    // ============================================================
+        const boost = getTierShiftBoost(species.tier);
+        if (!boost) return null;
 
-    function getActiveTeambuilderRoom() {
-        return (
-            window.app?.rooms?.teambuilder ||
-            (
-                window.room?.curTeam
-                ? window.room
-                : null
-            )
-        );
+        const stats = Object.assign({}, species.baseStats);
+        for (const stat of BOOSTABLE_STATS) stats[stat] += boost;
+        return stats;
     }
 
-    function isTierShiftFormat() {
-        const room = getActiveTeambuilderRoom();
-
-        if (!room?.curTeam) {
-            return false;
-        }
-
-        const format = room.curTeam.format;
-
-        return (
-            format === 'gen9tiershift' ||
-            format === 'gen9tiershiftaaa'
-        );
+    function tierShiftBaseStats(dex, set) {
+        const species = dex?.species?.get(set.species);
+        if (!species?.exists) return null;
+        return tierShiftModifiedStats(species);
     }
 
-    function isMixAndMegaFormat() {
-        const room = getActiveTeambuilderRoom();
-
-        if (!room?.curTeam) {
-            return false;
-        }
-
-        return room.curTeam.format === 'gen9mixandmega';
-    }
-
-    function isBadNBoostedFormat() {
-        const room = getActiveTeambuilderRoom();
-
-        if (!room?.curTeam) {
-            return false;
-        }
-
-        return room.curTeam.format === 'gen9badnboosted';
-    }
     // ============================================================
-    // MIX AND MEGA BASE STATS
+    // BAD 'N BOOSTED
     // ============================================================
 
-    function getMixAndMegaBaseStats(set) {
-        if (!set || !set.species || !set.item) return null;
-
-        const room = window.room;
-
-        if (!room || !room.curTeam || !room.curTeam.dex) {
-            return null;
+    // Every base stat of 70 or lower is doubled.
+    function badNBoostedModifiedStats(species) {
+        const stats = Object.assign({}, species.baseStats);
+        for (const stat of STATS) {
+            if (stats[stat] <= 70) stats[stat] *= 2;
         }
+        return stats;
+    }
 
-        const dex = room.curTeam.dex;
+    function badNBoostedBaseStats(dex, set) {
+        const species = dex?.species?.get(set.species);
+        if (!species?.exists) return null;
+        return badNBoostedModifiedStats(species);
+    }
 
-        const originalSpecies =
-              dex.species.get(set.species);
+    // ============================================================
+    // MIX AND MEGA
+    // ============================================================
 
-        const item =
-              dex.items.get(set.item);
+    // Figures out which forme an item turns a Pokémon into, and which
+    // (non-mega) species that forme's stat changes are measured against.
+    function resolveMegaForme(dex, item) {
+        if (!item?.exists) return null;
 
-        if (!originalSpecies || !originalSpecies.exists) {
-            return null;
-        }
+        let formeName = item.megaStone ? Object.values(item.megaStone)[0] : null;
 
-        if (!item || !item.exists) {
-            return null;
-        }
-
-        let formeName = null;
-
-        // --------------------------------------------------------
-        // Mega Stones
-        // --------------------------------------------------------
-
-        if (item.megaStone) {
-            formeName =
-                Object.values(item.megaStone)[0];
-        }
-
-        // --------------------------------------------------------
-        // Other MNM items
-        //
-        // itemUser identifies the forme associated with the item.
-        // Example:
-        // Lustrous Globe -> Palkia-Origin
-        // --------------------------------------------------------
-
-        if (!formeName && item.itemUser && item.itemUser.length) {
+        // Non-Mega-Stone Mix and Mega items (Blue Orb, Lustrous Globe, etc.)
+        // identify their forme through itemUser instead.
+        if (!formeName && item.itemUser?.length) {
             formeName = item.itemUser[0];
         }
 
-        if (!formeName) {
-            return null;
-        }
+        if (!formeName) return null;
 
-        const formeSpecies =
-              dex.species.get(formeName);
-
-        if (!formeSpecies || !formeSpecies.exists) {
-            return null;
-        }
-
-        // --------------------------------------------------------
-        // Find the base species whose stats are being modified.
-        // --------------------------------------------------------
+        const formeSpecies = dex.species.get(formeName);
+        if (!formeSpecies?.exists) return null;
 
         let baseSpecies = formeSpecies;
 
         if (formeSpecies.name === 'Zygarde-Mega') {
-
-            // MNM uses Zygarde-Complete -> Zygarde-Mega.
-            baseSpecies =
-                dex.species.get('Zygarde-Complete');
-
+            // Mix and Mega treats Zygarde-Complete as the "base" forme.
+            baseSpecies = dex.species.get('Zygarde-Complete');
         } else if (formeSpecies.isMega && formeSpecies.battleOnly) {
-
-            if (Array.isArray(formeSpecies.battleOnly)) {
-                baseSpecies =
-                    dex.species.get(
-                    formeSpecies.battleOnly[0]
-                );
-            } else {
-                baseSpecies =
-                    dex.species.get(
-                    formeSpecies.battleOnly
-                );
-            }
-
+            const battleOnly = Array.isArray(formeSpecies.battleOnly)
+                ? formeSpecies.battleOnly[0]
+                : formeSpecies.battleOnly;
+            baseSpecies = dex.species.get(battleOnly);
         } else if (formeSpecies.baseSpecies) {
-
-            baseSpecies =
-                dex.species.get(
-                formeSpecies.baseSpecies
-            );
+            baseSpecies = dex.species.get(formeSpecies.baseSpecies);
         }
 
-        if (!baseSpecies || !baseSpecies.exists) {
-            return null;
-        }
+        if (!baseSpecies?.exists) return null;
 
-        const baseStats =
-              Object.assign({}, originalSpecies.baseStats);
-
-        // --------------------------------------------------------
-        // Apply the forme's stat differences to the original
-        // Pokémon.
-        // --------------------------------------------------------
-
-        for (const stat of [
-            'atk',
-            'def',
-            'spa',
-            'spd',
-            'spe'
-        ]) {
-
-            const delta =
-                  formeSpecies.baseStats[stat] -
-                  baseSpecies.baseStats[stat];
-
-            baseStats[stat] =
-                Math.max(
-                1,
-                Math.min(
-                    255,
-                    baseStats[stat] + delta
-                )
-            );
-        }
-
-        return baseStats;
+        return { formeSpecies, baseSpecies };
     }
 
+    function mixAndMegaStatDelta(dex, item, stat) {
+        const forme = resolveMegaForme(dex, item);
+        if (!forme) return 0;
+        return forme.formeSpecies.baseStats[stat] - forme.baseSpecies.baseStats[stat];
+    }
+
+    function mixAndMegaBaseStats(dex, set) {
+        if (!set?.species || !set?.item || !dex) return null;
+
+        const species = dex.species.get(set.species);
+        const item = dex.items.get(set.item);
+        if (!species?.exists || !item?.exists) return null;
+
+        const forme = resolveMegaForme(dex, item);
+        if (!forme) return null;
+
+        const stats = Object.assign({}, species.baseStats);
+
+        for (const stat of BOOSTABLE_STATS) {
+            const delta = forme.formeSpecies.baseStats[stat] - forme.baseSpecies.baseStats[stat];
+            stats[stat] = Math.max(1, Math.min(255, stats[stat] + delta));
+        }
+
+        return stats;
+    }
+
+    // Pre-Mega speed, shown as a note under the base stat column, using
+    // Showdown's own stat formula (so it includes IVs/EVs/level/nature).
     function getPreMegaSpeed(set) {
-        if (!set || !set.species) return 0;
+        const dex = window.room?.curTeam?.dex;
+        const species = dex?.species?.get(set?.species);
+        if (!species?.exists) return 0;
 
-        const room = window.room;
+        const base = species.baseStats.spe;
+        const iv = set.ivs?.spe ?? 31;
+        const ev = set.evs?.spe ?? 0;
+        const level = set.level || 100;
 
-        if (!room || !room.curTeam || !room.curTeam.dex) {
-            return 0;
-        }
+        let speed = Math.floor((Math.floor(2 * base + iv + Math.floor(ev / 4)) * level) / 100) + 5;
 
-        const species =
-              room.curTeam.dex.species.get(set.species);
-
-        if (!species || !species.exists) {
-            return 0;
-        }
-
-        const base =
-              species.baseStats.spe;
-
-        const iv =
-              set.ivs &&
-              set.ivs.spe !== undefined
-        ? set.ivs.spe
-        : 31;
-
-        const ev =
-              set.evs &&
-              set.evs.spe !== undefined
-        ? set.evs.spe
-        : 0;
-
-        const level =
-              set.level || 100;
-
-        let speed =
-            Math.floor(
-                (
-                    Math.floor(
-                        2 * base +
-                        iv +
-                        Math.floor(ev / 4)
-                    ) *
-                    level
-                ) / 100
-            ) + 5;
-
-        const nature =
-              BattleNatures[set.nature];
-
-        if (nature) {
-
-            if (nature.plus === 'spe') {
-                speed =
-                    Math.floor(speed * 1.1);
-
-            } else if (nature.minus === 'spe') {
-                speed =
-                    Math.floor(speed * 0.9);
-            }
-        }
+        const nature = BattleNatures[set.nature];
+        if (nature?.plus === 'spe') speed = Math.floor(speed * 1.1);
+        else if (nature?.minus === 'spe') speed = Math.floor(speed * 0.9);
 
         return speed;
     }
 
     function updateMixAndMegaSpeedNote(room) {
-        if (!room || !room.$chart) return;
-
-        const note =
-              room.$chart.find('.mnm-speed-note');
-
-        if (!note.length) return;
+        const note = room?.$chart?.find('.mnm-speed-note');
+        if (!note?.length) return;
 
         const set = room.curSet;
-
         if (!set) return;
 
-        const speed =
-              getPreMegaSpeed(set);
-
-        note.find('.mnm-speed-value').text(speed);
+        note.find('.mnm-speed-value').text(getPreMegaSpeed(set));
     }
 
     function updateMixAndMegaSpeedNotePosition(room) {
+        const note = room?.$chart?.find('.mnm-speed-note');
+        if (!note?.length) return;
 
-        if (!room || !room.$chart) {
-            return;
-        }
-
-        const note =
-              room.$chart.find('.mnm-speed-note');
-
-        if (!note.length) {
-            return;
-        }
-
-        const suggested =
-              room.$chart.find('.statform .suggested');
-
+        const suggested = room.$chart.find('.statform .suggested');
         const hasGuessedSpread =
-              suggested.length &&
-              !suggested.text().includes(
-                  'Please choose 4 moves'
-              );
+            suggested.length && !suggested.text().includes('Please choose 4 moves');
 
-        if (hasGuessedSpread) {
+        note.css('top', hasGuessedSpread ? '318px' : '300px');
+    }
 
-            note.css(
-                'top',
-                '318px'
+    function renderMixAndMegaSpeedNote(room) {
+        const chart = room.$chart;
+        if (!chart) return;
+
+        chart.find('.basestatscol').css('position', 'relative');
+
+        let note = chart.find('.mnm-speed-note');
+        if (!note.length) {
+            note = $(
+                '<div class="mnm-speed-note" style="position:absolute;left:300px;top:300px;z-index:10;">' +
+                    'Note: Speed is <span class="mnm-speed-value">0</span> before Mega Evolving</div>'
             );
-
-        } else {
-
-            note.css(
-                'top',
-                '300px'
-            );
+            chart.find('.basestatscol').after(note);
         }
+
+        updateMixAndMegaSpeedNote(room);
+        updateMixAndMegaSpeedNotePosition(room);
     }
 
     // ============================================================
-    // SHIFTED STAT
+    // GODLY GIFT
     // ============================================================
 
-    function getShiftedStat(species, stat) {
-        if (!species || !species.baseStats) {
-            return 0;
+    // The "God" is whichever teammate is a Restricted Pokémon; if none is
+    // Restricted yet, the first team slot is treated as the God.
+    function findGodSet(room) {
+        const team = room?.curSetList;
+        if (!Array.isArray(team) || !team.length) return null;
+        if (!godlyGiftRestricted.size) return null;
+
+        const dex = room.curTeam.dex;
+
+        for (const set of team) {
+            if (!set?.species) continue;
+            const species = dex.species.get(set.species);
+            if (species?.exists && godlyGiftRestricted.has(species.id)) return set;
         }
 
-        const base = species.baseStats[stat];
-
-        if (typeof base !== 'number') {
-            return 0;
-        }
-
-        // HP is never boosted.
-        if (stat === 'hp') {
-            return base;
-        }
-
-        return base + getTierShiftBoost(species.tier);
+        return team[0];
     }
 
+    // Each of the God's 6 base stats is "donated" to the matching team slot
+    // (slot 0 gets HP, slot 1 gets Atk, ...). Returns null for the God's own
+    // slot, since it keeps its own stats.
+    function godlyGiftDonation(room, set) {
+        const team = room?.curSetList;
+        if (!room?.curTeam || !set || !Array.isArray(team) || !team.length) return null;
+        if (!godlyGiftRestricted.size) return null;
 
-    // ============================================================
-    // SHIFTED BST
-    // ============================================================
+        const godSet = findGodSet(room);
+        if (!godSet?.species) return null;
 
-    function getShiftedBST(species) {
-        if (!species || !species.baseStats) {
-            return 0;
+        const dex = room.curTeam.dex;
+        const godSpecies = dex.species.get(godSet.species);
+        if (!godSpecies?.exists) return null;
+
+        // Godly Gift donates the God's BASIC form stats.
+        let basicGodSpecies = godSpecies;
+        if (godSpecies.baseSpecies) {
+            const base = dex.species.get(godSpecies.baseSpecies);
+            if (base?.exists) basicGodSpecies = base;
         }
 
-        const stats = species.baseStats;
-        const boost = getTierShiftBoost(species.tier);
+        const index = team.indexOf(set);
+        if (index < 0 || index > 5) return null;
+        if (index === team.indexOf(godSet)) return null;
 
-        return (
-            stats.hp +
-            (stats.atk + boost) +
-            (stats.def + boost) +
-            (stats.spa + boost) +
-            (stats.spd + boost) +
-            (stats.spe + boost)
-        );
+        const stat = STATS[index];
+        return { stat, value: basicGodSpecies.baseStats[stat] };
     }
 
-    // ============================================================
-    // PATCH: LEGALITY
-    // ============================================================
+    function godlyGiftBaseStats(room, set) {
+        const dex = room?.curTeam?.dex;
+        const species = dex?.species?.get(set?.species);
+        if (!species?.exists) return null;
 
-    function patchTSABanlistReceiver() {
-        if (!window.app || typeof app.receive !== 'function') {
-            return false;
-        }
+        const stats = Object.assign({}, species.baseStats);
+        const donation = godlyGiftDonation(room, set);
+        if (donation) stats[donation.stat] = donation.value;
 
-        if (app.receive.__tsaPatched) {
-            return true;
-        }
-
-        const originalReceive = app.receive;
-
-        app.receive = function (data) {
-            const result =
-                  originalReceive.apply(this, arguments);
-
-            try {
-                if (typeof data !== 'string') {
-                    return result;
-                }
-
-                // ----------------------------------------------------
-                // TIER SHIFT AAA
-                // ----------------------------------------------------
-
-                if (
-                    data.includes('[Gen 9] Tier Shift AAA') &&
-                    data.includes('/raw ')
-                ) {
-                    const match =
-                          data.match(/\|\/raw (.*)/);
-
-                    if (match) {
-                        parseTSABanlist(match[1]);
-                    }
-                }
-
-
-                // ----------------------------------------------------
-                // GODLY GIFT
-                // ----------------------------------------------------
-
-                if (
-                    data.includes('[Gen 9] Godly Gift') &&
-                    data.includes('/raw ')
-                ) {
-                    const match =
-                          data.match(/\|\/raw (.*)/);
-
-                    if (match) {
-                        parseGodlyGiftRestricted(match[1]);
-                    }
-                }
-
-            } catch (e) {
-                console.error(
-                    '[Tier Shift / Godly Gift] Failed to parse server data:',
-                    e
-                );
-            }
-
-            return result;
-        };
-
-        app.receive.__tsaPatched = true;
-
-        console.log(
-            '[Tier Shift / Godly Gift] Server receiver patched'
-        );
-
-        return true;
+        return stats;
     }
 
-    function patchBattlePokemonSearchLegality() {
-        const SearchClass = window.BattlePokemonSearch;
-        if (!SearchClass) return false;
+    // For the Pokémon search / legality list: every Restricted Pokémon
+    // other than the current God is illegal to add to the team.
+    function getGodlyGiftIllegalIds(room) {
+        if (!isGodlyGiftFormat(room)) return new Set();
 
-        const prototype = SearchClass.prototype;
-        if (!prototype || typeof prototype.getBaseResults !== 'function') {
-            return false;
-        }
+        const team = room?.curSetList;
+        if (!Array.isArray(team) || !godlyGiftRestricted.size) return new Set();
 
-        if (prototype.getBaseResults.__tierShiftLegalityPatched) {
-            return true;
-        }
+        const dex = room.curTeam.dex;
+        let godId = null;
 
-        const originalGetBaseResults = prototype.getBaseResults;
+        for (const set of team) {
+            if (!set?.species) continue;
 
-        const TSA_BANNED_POKEMON = new Set([
-            'arceus',
-            'calyrexshadow',
-            'decidueyehisui',
-            'deoxysattack',
-            'electrodehisui',
-            'eternatus',
-            'hooh',
-            'hoopa',
-            'kyuremblack',
-            'miraidon',
-            'necrozmaduskmane',
-            'noivern',
-            'rayquaza',
-            'regigigas',
-            'slaking',
-            'weavile'
-        ]);
+            const species = dex.species.get(set.species);
+            if (!species?.exists) continue;
 
-        prototype.getBaseResults = function () {
-            if (this.format !== 'tiershiftaaa') {
-                return originalGetBaseResults.call(this);
-            }
+            const baseSpecies = species.baseSpecies ? dex.species.get(species.baseSpecies) : species;
 
-            /*
-         * Get the GEN 9 legal pool.
-         *
-         * This must come from the Gen 9 teambuilder data,
-         * NOT BattlePokedex and NOT Tier Shift's banlist.
-         */
-            const oldFormat = this.format;
-            this.format = 'gen9';
-
-            const gen9Results = originalGetBaseResults.call(this);
-
-            this.format = oldFormat;
-
-            /*
-         * Now apply ONLY Tier Shift AAA's Pokemon bans.
-         */
-            return gen9Results.filter(result => {
-                if (result[0] !== this.searchType) {
-                    return true;
-                }
-
-                const id = result[1];
-
-                // Direct TSA ban
-                if (TSA_BANNED_POKEMON.has(id)) {
-                    return false;
-                }
-
-                // Arceus is banned as a species, so all formes are banned.
-                const species = this.dex.species.get(id);
-
-                if (species?.baseSpecies === 'Arceus') {
-                    return false;
-                }
-
-                return true;
-            });
-        };
-
-        prototype.getBaseResults.__tierShiftLegalityPatched = true;
-
-        console.log(
-            '[Tier Shift] TSA legality: Gen 9 pool + TSA bans'
-        );
-
-        return true;
-    }
-
-    function patchGodlyGiftSearch() {
-        const room =
-              window.app?.rooms?.teambuilder;
-
-        if (!room?.search?.engine?.typedSearch) {
-            return false;
-        }
-
-        const search =
-              room.search.engine.typedSearch;
-
-        // Find the prototype that actually owns getResults().
-        let prototype =
-            Object.getPrototypeOf(search);
-
-        while (
-            prototype &&
-            typeof prototype.getResults !== 'function'
-        ) {
-            prototype =
-                Object.getPrototypeOf(prototype);
-        }
-
-        if (!prototype) {
-            return false;
-        }
-
-        if (
-            prototype.getResults
-            .__godlyGiftPatched
-        ) {
-            return true;
-        }
-
-        const originalGetResults =
-              prototype.getResults;
-
-        prototype.getResults =
-            function (
-        filters,
-         sortCol,
-         reverseSort
-        ) {
-
-            const result =
-                  originalGetResults.call(
-                      this,
-                      filters,
-                      sortCol,
-                      reverseSort
-                  );
-
-            if (
-                this.format !== 'godlygift'
-            ) {
-                return result;
-            }
-
-            const room =
-                  window.app?.rooms?.teambuilder;
-
-            if (!room) {
-                return result;
-            }
-
-            const illegalIds =
-                  getGodlyGiftIllegalIds(room);
-
-            if (!illegalIds.size) {
-                return result;
-            }
-
-            // --------------------------------------------------------
-            // Move all banned Restricted Pokémon and their formes
-            // into Illegal results.
-            // --------------------------------------------------------
-
-            const legalResults = [];
-            const illegalPokemon = [];
-
-            for (const row of result) {
-
-                if (
-                    row[0] !== this.searchType
-                ) {
-                    legalResults.push(row);
-                    continue;
-                }
-
-                const id = row[1];
-
-                const isIllegal =
-                      [...illegalIds].some(
-                          bannedId =>
-                          id === bannedId ||
-                          id.startsWith(bannedId)
-                      );
-
-                if (isIllegal) {
-                    illegalPokemon.push(row);
-                } else {
-                    legalResults.push(row);
-                }
-            }
-
-            if (!illegalPokemon.length) {
-                return result;
-            }
-
-            return legalResults.concat([
-                [
-                    'header',
-                    TL(["Illegal results"])
-                ],
-                ...illegalPokemon
-            ]);
-        };
-
-        prototype.getResults
-            .__godlyGiftPatched = true;
-
-        prototype.getResults
-            .__godlyGiftOriginal =
-            originalGetResults;
-
-        console.log(
-            '[Godly Gift] Search legality patched'
-        );
-
-        return true;
-    }
-
-    // ============================================================
-    // PATCH: BATTLEPOKEMONSEARCH SORT
-    // ============================================================
-
-
-    function patchBattlePokemonSearch() {
-        const SearchClass = window.BattlePokemonSearch;
-
-        if (!SearchClass) {
-            return false;
-        }
-
-        const prototype = SearchClass.prototype;
-
-        if (
-            !prototype ||
-            typeof prototype.sort !== 'function'
-        ) {
-            return false;
-        }
-
-        // Don't patch twice.
-        if (prototype.sort.__tierShiftPatched) {
-            return true;
-        }
-
-        const originalSort = prototype.sort;
-
-        function bnbSort(
-        results,
-         sortCol,
-         reverseSort
-        ) {
-            const sortOrder =
-                  reverseSort ? -1 : 1;
-
-            const statOrder = [
-                'hp',
-                'atk',
-                'def',
-                'spa',
-                'spd',
-                'spe'
-            ];
-
-            function getBnBStats(species) {
-                const stats =
-                      Object.assign(
-                          {},
-                          species.baseStats
-                      );
-
-                for (const stat of statOrder) {
-                    if (stats[stat] <= 70) {
-                        stats[stat] *= 2;
-                    }
-                }
-
-                return stats;
-            }
-
-            if (statOrder.includes(sortCol)) {
-                return results.sort((a, b) => {
-                    const species1 =
-                          this.dex.species.get(a[1]);
-
-                    const species2 =
-                          this.dex.species.get(b[1]);
-
-                    const stats1 =
-                          getBnBStats(species1);
-
-                    const stats2 =
-                          getBnBStats(species2);
-
-                    return (
-                        (stats2[sortCol] -
-                         stats1[sortCol]) *
-                        sortOrder
-                    );
-                });
-            }
-
-            if (sortCol === 'bst') {
-                return results.sort((a, b) => {
-                    const species1 =
-                  this.dex.species.get(a[1]);
-
-            const species2 =
-                  this.dex.species.get(b[1]);
-
-            const stats1 =
-                  getBnBStats(species1);
-
-            const stats2 =
-                  getBnBStats(species2);
-
-            const bst1 =
-                  statOrder.reduce(
-                      (total, stat) =>
-                      total + stats1[stat],
-                      0
-                  );
-
-            const bst2 =
-                  statOrder.reduce(
-                      (total, stat) =>
-                      total + stats2[stat],
-                      0
-                  );
-
-            return (
-                (bst2 - bst1) *
-                sortOrder
-            );
-        });
-    }
-
-        return originalSort.call(
-            this,
-            results,
-            sortCol,
-            reverseSort
-        );
-    }
-
-
-        function tierShiftSort(
-        results,
-         sortCol,
-         reverseSort
-        ) {
-            if (isBadNBoostedFormat()) {
-                return bnbSort.call(
-                    this,
-                    results,
-                    sortCol,
-                    reverseSort
-                );
-            }
-
-            // Existing Tier Shift behavior
-            if (!isTierShiftFormat()) {
-                return originalSort.call(
-                    this,
-                    results,
-                    sortCol,
-                    reverseSort
-                );
-            }
-
-            const sortOrder =
-                  reverseSort ? -1 : 1;
-
-            if (
-                [
-                    'hp',
-                    'atk',
-                    'def',
-                    'spa',
-                    'spd',
-                    'spe'
-                ].includes(sortCol)
-            ) {
-                return results.sort((a, b) => {
-                    const species1 =
-                          this.dex.species.get(a[1]);
-
-                    const species2 =
-                          this.dex.species.get(b[1]);
-
-                    const stat1 =
-                          getShiftedStat(
-                              species1,
-                              sortCol
-                          );
-
-                    const stat2 =
-                          getShiftedStat(
-                              species2,
-                              sortCol
-                          );
-
-                    return (
-                        (stat2 - stat1) *
-                        sortOrder
-                    );
-                });
-            }
-
-            if (sortCol === 'bst') {
-                return results.sort((a, b) => {
-                    const species1 =
-                          this.dex.species.get(a[1]);
-
-                    const species2 =
-                          this.dex.species.get(b[1]);
-
-                    const bst1 =
-                          getShiftedBST(species1);
-
-                    const bst2 =
-                          getShiftedBST(species2);
-
-                    return (
-                        (bst2 - bst1) *
-                        sortOrder
-                    );
-                });
-            }
-
-            return originalSort.call(
-                this,
-                results,
-                sortCol,
-                reverseSort
-            );
-        }
-
-        tierShiftSort.__tierShiftPatched = true;
-        tierShiftSort.__tierShiftOriginal =
-            originalSort;
-
-        prototype.sort = tierShiftSort;
-
-        console.log(
-            '[Tier Shift] BattlePokemonSearch.sort patched'
-        );
-
-        return true;
-    }
-
-
-    // ============================================================
-    // PATCH: DISPLAYED POKEMON STATS
-    // ============================================================
-
-    function patchBattleSearchRenderer() {
-        const SearchClass =
-              window.BattleSearch;
-
-        if (!SearchClass) {
-            return false;
-        }
-
-        const prototype =
-              SearchClass.prototype;
-
-        if (
-            !prototype ||
-            typeof prototype.renderPokemonRow !==
-            'function'
-        ) {
-            return false;
-        }
-
-        // Don't patch twice.
-        if (
-            prototype.renderPokemonRow
-            .__tierShiftPatched
-        ) {
-            return true;
-        }
-
-        const originalRenderPokemonRow =
-              prototype.renderPokemonRow;
-
-
-        prototype.renderPokemonRow = function (
-        pokemon,
-         matchStart,
-         matchLength,
-         errorMessage,
-         attrs
-        ) {
-
-            // ----------------------------------------------------
-            // Normal formats
-            // ----------------------------------------------------
-
-            // Normal formats
-            if (
-                !isTierShiftFormat() &&
-                !isBadNBoostedFormat()
-            ) {
-                return originalRenderPokemonRow.call(
-                    this,
-                    pokemon,
-                    matchStart,
-                    matchLength,
-                    errorMessage,
-                    attrs
-                );
-            }
-
-            // ----------------------------------------------------
-            // Error / missing Pokémon
-            // ----------------------------------------------------
-
-            if (!pokemon) {
-                return originalRenderPokemonRow.call(
-                    this,
-                    pokemon,
-                    matchStart,
-                    matchLength,
-                    errorMessage,
-                    attrs
-                );
-            }
-
-
-            const shiftedPokemon =
-                  Object.assign({}, pokemon);
-
-            shiftedPokemon.baseStats =
-                Object.assign(
-                {},
-                pokemon.baseStats
-            );
-
-            const statOrder = [
-                'hp',
-                'atk',
-                'def',
-                'spa',
-                'spd',
-                'spe'
-            ];
-
-            if (isBadNBoostedFormat()) {
-
-                // Bad 'n Boosted:
-                // Double every base stat that is 70 or lower.
-                for (const stat of statOrder) {
-                    if (
-                        shiftedPokemon.baseStats[stat] <= 70
-                    ) {
-                        shiftedPokemon.baseStats[stat] *= 2;
-                    }
-                }
-
-            } else {
-
-                // Tier Shift
-                for (const stat of statOrder) {
-                    shiftedPokemon.baseStats[stat] =
-                        getShiftedStat(
-                        pokemon,
-                        stat
-                    );
-                }
-
-            }
-
-
-            // Give the original renderer the temporary
-            // Tier Shift version.
-            return originalRenderPokemonRow.call(
-                this,
-                shiftedPokemon,
-                matchStart,
-                matchLength,
-                errorMessage,
-                attrs
-            );
-        };
-
-
-        prototype.renderPokemonRow
-            .__tierShiftPatched = true;
-
-        prototype.renderPokemonRow
-            .__tierShiftOriginal =
-            originalRenderPokemonRow;
-
-        console.log(
-            '[Tier Shift] BattleSearch.renderPokemonRow patched'
-        );
-
-        return true;
-    }
-
-
-    // ============================================================
-    // PATCH: TEAMBUILDER STAT CALCULATION
-    // ============================================================
-
-    function isGodlyGiftFormat(room) {
-        const isGodlyGift =
-              room?.curTeam?.format === 'gen9godlygift';
-
-        if (
-            isGodlyGift &&
-            !godlyGiftRestrictedLoaded &&
-            !godlyGiftRequestSent
-        ) {
-            requestGGBanlist();
-        }
-
-        return isGodlyGift;
-    }
-
-    function getGodlyGiftBaseStats(room, set) {
-        if (
-            !room ||
-            !room.curTeam ||
-            !set
-        ) {
-            return null;
-        }
-
-        // ----------------------------------------------------
-        // The Teambuilder's actual six-Pokemon set list.
-        // ----------------------------------------------------
-
-        const team =
-              room.curSetList;
-
-        if (
-            !Array.isArray(team) ||
-            !team.length
-        ) {
-            return null;
-        }
-
-        // ----------------------------------------------------
-        // Current server Restricted list.
-        // ----------------------------------------------------
-
-        const restricted =
-              window.godlyGiftRestricted;
-
-        if (
-            !restricted ||
-            !restricted.size
-        ) {
-            return null;
-        }
-
-        // ----------------------------------------------------
-        // Find the God.
-        //
-        // God = Restricted Pokemon on the team.
-        // If there is no Restricted Pokemon,
-        // the first Pokemon is the God.
-        // ----------------------------------------------------
-
-        let godSet = null;
-
-        for (const teamSet of team) {
-
-            if (!teamSet?.species) {
-                continue;
-            }
-
-            const species =
-                  room.curTeam.dex.species.get(
-                      teamSet.species
-                  );
-
-            if (!species || !species.exists) {
-                continue;
-            }
-
-            if (restricted.has(species.id)) {
-                godSet = teamSet;
+            if (baseSpecies?.exists && godlyGiftRestricted.has(baseSpecies.id)) {
+                godId = baseSpecies.id;
                 break;
             }
         }
 
-        // No Restricted Pokemon:
-        // first slot becomes the God.
-        if (!godSet) {
-            godSet = team[0];
+        if (!godId) return new Set();
+
+        const illegal = new Set();
+        for (const id of godlyGiftRestricted) {
+            if (id !== godId) illegal.add(id);
         }
-
-        if (!godSet?.species) {
-            return null;
-        }
-
-        // ----------------------------------------------------
-        // Get the God's species.
-        // ----------------------------------------------------
-
-        const godSpecies =
-              room.curTeam.dex.species.get(
-                  godSet.species
-              );
-
-        if (
-            !godSpecies ||
-            !godSpecies.exists
-        ) {
-            return null;
-        }
-        // Godly Gift uses the God's BASIC FORM stats.
-
-
-        let basicGodSpecies =
-            godSpecies;
-
-        if (godSpecies.baseSpecies) {
-
-            const base =
-                  room.curTeam.dex.species.get(
-                      godSpecies.baseSpecies
-                  );
-
-            if (
-                base &&
-                base.exists
-            ) {
-                basicGodSpecies = base;
-            }
-        }
-
-        // ----------------------------------------------------
-        // Use the Teambuilder's actual current slot.
-        //
-        // curSetLoc:
-        // 0 -> HP
-        // 1 -> Atk
-        // 2 -> Def
-        // 3 -> SpA
-        // 4 -> SpD
-        // 5 -> Spe
-        // ----------------------------------------------------
-
-        const index =
-              team.indexOf(set);
-
-        if (
-            index < 0 ||
-            index > 5
-        ) {
-            return null;
-        }
-
-        const statForSlot = [
-            'hp',
-            'atk',
-            'def',
-            'spa',
-            'spd',
-            'spe'
-        ];
-
-        const donatedStat =
-              statForSlot[index];
-
-        // ----------------------------------------------------
-        // The God itself keeps its own stats.
-        // ----------------------------------------------------
-
-        if (
-            index === team.indexOf(godSet)
-        ) {
-            return null;
-        }
-
-        return {
-            stat: donatedStat,
-            value:
-            basicGodSpecies.baseStats[
-                donatedStat
-            ]
-        };
+        return illegal;
     }
 
-    function getBadNBoostedBaseStats(set, room) {
-        if (!set?.species || !room?.curTeam?.dex?.species?.get) {
-            return null;
+    // ============================================================
+    // MOD DISPATCH
+    // ============================================================
+
+    // Single place that knows how to compute a fully modified baseStats
+    // object for whichever mod is active. Every patch below goes through
+    // this instead of re-implementing per-mod branches.
+    function computeModBaseStats(mod, { dex, set, room }) {
+        switch (mod) {
+            case MOD.TIER_SHIFT:
+                return tierShiftBaseStats(dex, set);
+            case MOD.BAD_N_BOOSTED:
+                return badNBoostedBaseStats(dex, set);
+            case MOD.MIX_AND_MEGA:
+                return mixAndMegaBaseStats(dex, set);
+            case MOD.GODLY_GIFT:
+                return godlyGiftBaseStats(room, set);
+            default:
+                return null;
         }
-
-        const species =
-              room.curTeam.dex.species.get(set.species);
-
-        if (!species || !species.exists) {
-            return null;
-        }
-
-        const baseStats =
-              Object.assign({}, species.baseStats);
-
-        for (const stat of [
-            'hp',
-            'atk',
-            'def',
-            'spa',
-            'spd',
-            'spe'
-        ]) {
-            if (baseStats[stat] <= 70) {
-                baseStats[stat] *= 2;
-            }
-        }
-
-        return baseStats;
     }
 
-    function patchTeambuilderGetStat() {
-        const RoomClass =
-              window.TeambuilderRoom;
-
-        if (!RoomClass) {
-            return false;
-        }
-
-        const prototype =
-              RoomClass.prototype;
-
-        if (
-            !prototype ||
-            typeof prototype.getStat !== 'function'
-        ) {
-            return false;
-        }
-
-        if (
-            prototype.getStat.__tierShiftPatched
-        ) {
-            return true;
-        }
-
-        const originalGetStat =
-              prototype.getStat;
-
-        prototype.getStat = function (
-        stat,
-         set,
-         evOverride,
-         natureOverride
-        ) {
-
-            // ----------------------------------------------------
-            // Normal formats
-            // ----------------------------------------------------
-
-            if (
-                !isTierShiftFormat() &&
-                !isMixAndMegaFormat() &&
-                !isBadNBoostedFormat() &&
-                !isGodlyGiftFormat(this)
-            ) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            if (!set) {
-                set = this.curSet;
-            }
-
-            if (!set) {
-                return 0;
-            }
-
-            // --------------------------------------------------------
-            // BAD 'N BOOSTED
-            // --------------------------------------------------------
-
-            if (isBadNBoostedFormat()) {
-
-                const badNBoostedBaseStats =
-                      getBadNBoostedBaseStats(
-                          set,
-                          this
-                      );
-
-                if (badNBoostedBaseStats) {
-
-                    const species =
-                          this.curTeam.dex.species.get(
-                              set.species
-                          );
-
-                    if (
-                        species &&
-                        species.exists
-                    ) {
-
-                        const originalSpeciesGet =
-                              this.curTeam.dex.species.get;
-
-                        this.curTeam.dex.species.get =
-                            function (name) {
-
-                            const result =
-                                  originalSpeciesGet.call(
-                                      this,
-                                      name
-                                  );
-
-                            if (result === species) {
-
-                                const boostedSpecies =
-                                      Object.assign(
-                                          {},
-                                          result
-                                      );
-
-                                boostedSpecies.baseStats =
-                                    Object.assign(
-                                    {},
-                                    badNBoostedBaseStats
-                                );
-
-                                return boostedSpecies;
-                            }
-
-                            return result;
-                        };
-
-                        try {
-
-                            return originalGetStat.call(
-                                this,
-                                stat,
-                                set,
-                                evOverride,
-                                natureOverride
-                            );
-
-                        } finally {
-
-                            this.curTeam.dex.species.get =
-                                originalSpeciesGet;
-
-                        }
-                    }
-                }
-
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-            // ----------------------------------------------------
-            // GODLY GIFT
-            // ----------------------------------------------------
-
-            if (isGodlyGiftFormat(this)) {
-
-                const godlyGiftStat =
-                      getGodlyGiftBaseStats(
-                          this,
-                          set
-                      );
-
-                if (godlyGiftStat) {
-
-                    const species =
-                          this.curTeam.dex.species.get(
-                              set.species
-                          );
-
-                    if (
-                        species &&
-                        species.exists
-                    ) {
-
-                        const originalSpeciesGet =
-                              this.curTeam.dex.species.get;
-
-                        this.curTeam.dex.species.get =
-                            function (name) {
-
-                            const result =
-                                  originalSpeciesGet.call(
-                                      this,
-                                      name
-                                  );
-
-                            if (result === species) {
-
-                                const giftedSpecies =
-                                      Object.assign(
-                                          {},
-                                          result
-                                      );
-
-                                giftedSpecies.baseStats =
-                                    Object.assign(
-                                    {},
-                                    result.baseStats
-                                );
-
-                                giftedSpecies.baseStats[
-                                    godlyGiftStat.stat
-                                ] =
-                                    godlyGiftStat.value;
-
-                                return giftedSpecies;
-                            }
-
-                            return result;
-                        };
-
-                        try {
-                            return originalGetStat.call(
-                                this,
-                                stat,
-                                set,
-                                evOverride,
-                                natureOverride
-                            );
-                        } finally {
-                            this.curTeam.dex.species.get =
-                                originalSpeciesGet;
-                        }
-                    }
-                }
-
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-
-            // ----------------------------------------------------
-            // MIX AND MEGA
-            // ----------------------------------------------------
-
-            if (isMixAndMegaFormat()) {
-
-                const mixedBaseStats =
-                      getMixAndMegaBaseStats(set);
-
-                if (mixedBaseStats) {
-
-                    const species =
-                          this.curTeam.dex.species.get(
-                              set.species
-                          );
-
-                    if (
-                        species &&
-                        species.exists
-                    ) {
-
-                        const originalSpeciesGet =
-                              this.curTeam.dex.species.get;
-
-                        this.curTeam.dex.species.get =
-                            function (name) {
-
-                            const result =
-                                  originalSpeciesGet.call(
-                                      this,
-                                      name
-                                  );
-
-                            if (result === species) {
-
-                                const mixedSpecies =
-                                      Object.assign(
-                                          {},
-                                          result
-                                      );
-
-                                mixedSpecies.baseStats =
-                                    Object.assign(
-                                    {},
-                                    mixedBaseStats
-                                );
-
-                                return mixedSpecies;
-                            }
-
-                            return result;
-                        };
-
-                        try {
-                            return originalGetStat.call(
-                                this,
-                                stat,
-                                set,
-                                evOverride,
-                                natureOverride
-                            );
-                        } finally {
-                            this.curTeam.dex.species.get =
-                                originalSpeciesGet;
-                        }
-                    }
-                }
-
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-
-            // ----------------------------------------------------
-            // TIER SHIFT
-            // ----------------------------------------------------
-
-            const species =
-                  this.curTeam.dex.species.get(
-                      set.species
-                  );
-
-            if (
-                !species ||
-                !species.exists
-            ) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            // HP is never shifted.
-            if (stat === 'hp') {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            const boost =
-                  getTierShiftBoost(
-                      species.tier
-                  );
-
-            if (!boost) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            const originalSpeciesGet =
-                  this.curTeam.dex.species.get;
-
-            this.curTeam.dex.species.get =
-                function (name) {
-
-                const result =
-                      originalSpeciesGet.call(
-                          this,
-                          name
-                      );
-
-                if (result === species) {
-
-                    const shiftedSpecies =
-                          Object.assign(
-                              {},
-                              result
-                          );
-
-                    shiftedSpecies.baseStats =
-                        Object.assign(
-                        {},
-                        result.baseStats
-                    );
-
-                    shiftedSpecies.baseStats[stat] =
-                        result.baseStats[stat] +
-                        boost;
-
-                    return shiftedSpecies;
-                }
-
-                return result;
-            };
-
+    // Stats used when sorting/rendering the Pokémon search list. Only
+    // Tier Shift and Bad 'n Boosted change what's shown there.
+    function searchListStats(species, mod) {
+        if (mod === MOD.BAD_N_BOOSTED) return badNBoostedModifiedStats(species);
+        if (mod === MOD.TIER_SHIFT) return tierShiftModifiedStats(species) || species.baseStats;
+        return species.baseStats;
+    }
+
+    // ============================================================
+    // PATCH: server message receiver (banlists)
+    // ============================================================
+
+    function patchServerReceive() {
+        return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
+                           function (data) {
             try {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            } finally {
-                this.curTeam.dex.species.get =
-                    originalSpeciesGet;
+                if (typeof data === 'string' && data.includes('/raw ')) {
+                    const match = data.match(/\|\/raw (.*)/);
+
+                    let isBanlistResponse = false;
+
+                    if (match && data.includes('[Gen 9] Tier Shift AAA')) {
+                        parseTSABanlist(match[1]);
+                        isBanlistResponse = true;
+                    }
+
+                    if (match && data.includes('[Gen 9] Godly Gift')) {
+                        parseGodlyGiftRestricted(match[1]);
+                        isBanlistResponse = true;
+                    }
+
+                    // The banlist has been parsed and saved.
+                    // Prevent the raw response from being displayed.
+                    if (isBanlistResponse) {
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error(LOG, 'Failed to parse server data:', e);
             }
-        };
 
-        prototype.getStat.__tierShiftPatched =
-            true;
-
-        prototype.getStat.__tierShiftOriginal =
-            originalGetStat;
-
-        console.log(
-            '[Tier Shift] TeambuilderRoom.getStat patched'
-        );
-
-        return true;
+            // Allow all other server messages to work normally.
+            return original.apply(this, arguments);
+        }
+                          );
     }
 
     // ============================================================
-    // PATCH: TIER SHIFT BATTLE HOVER STATS
-    // ============================================================
-    function diagnoseSpeedRangePatch() {
-        console.log('[Tier Shift] Speed range diagnostic started');
-
-        console.log(
-            'window keys containing tooltip:',
-            Object.keys(window).filter(key =>
-                                       /tooltip|battle/i.test(key)
-                                      )
-        );
-
-        console.log(
-            'window keys containing speed:',
-            Object.keys(window).filter(key =>
-                                       /speed|stat/i.test(key)
-                                      )
-        );
-
-        console.log(
-            'Existing global BattleTooltips:',
-            window.BattleTooltips
-        );
-
-        console.log(
-            'Existing global BattleRoom:',
-            window.BattleRoom
-        );
-
-        console.log(
-            'Existing global Battle:',
-            window.Battle
-        );
-    }
-
-    diagnoseSpeedRangePatch();
-
-    function patchBattleStatGuesser() {
-        const Guesser = window.BattleStatGuesser;
-        if (!Guesser?.prototype) return false;
-
-        const prototype = Guesser.prototype;
-
-        if (typeof prototype.getStat !== 'function') return false;
-
-        if (prototype.getStat.__tierShiftBattlePatched) {
-            return true;
-        }
-
-        const originalGetStat = prototype.getStat;
-
-        prototype.getStat = function (stat, set, evOverride, natureOverride) {
-            const formatid = String(this.formatid || '').toLowerCase();
-
-            const isTierShift =
-                  formatid.includes('tiershift');
-
-            if (
-                !isTierShift ||
-                !set?.species ||
-                !this.dex?.species?.get
-            ) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            const speciesDex = this.dex.species;
-            const originalSpeciesGet = speciesDex.get;
-
-            const originalSpecies = originalSpeciesGet.call(
-                speciesDex,
-                set.species
-            );
-
-            if (!originalSpecies?.exists) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            if (stat === 'hp') {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            const boost = getTierShiftBoost(originalSpecies.tier);
-
-            if (!boost) {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            }
-
-            const shiftedSpecies = Object.assign({}, originalSpecies);
-
-            shiftedSpecies.baseStats = Object.assign(
-                {},
-                originalSpecies.baseStats
-            );
-
-            for (const statName of ['atk', 'def', 'spa', 'spd', 'spe']) {
-                shiftedSpecies.baseStats[statName] += boost;
-            }
-
-            console.log('[Tier Shift Battle]', {
-                species: originalSpecies.name,
-                tier: originalSpecies.tier,
-                stat,
-                originalBaseStat: originalSpecies.baseStats[stat],
-                boost,
-                shiftedBaseStat: shiftedSpecies.baseStats[stat],
-                formatid: this.formatid
-            });
-
-            speciesDex.get = function (name) {
-                const result = originalSpeciesGet.call(
-                    speciesDex,
-                    name
-                );
-
-                if (result === originalSpecies) {
-                    return shiftedSpecies;
-                }
-
-                return result;
-            };
-
-            try {
-                return originalGetStat.call(
-                    this,
-                    stat,
-                    set,
-                    evOverride,
-                    natureOverride
-                );
-            } finally {
-                speciesDex.get = originalSpeciesGet;
-            }
-        };
-
-        prototype.getStat.__tierShiftBattlePatched = true;
-        prototype.getStat.__tierShiftBattleOriginal = originalGetStat;
-
-        console.log('[Tier Shift] BattleStatGuesser.getStat patched');
-
-        return true;
-    }
-    // ============================================================
-    // PATCH: TEAMBUILDER STAT FORM
+    // PATCH: Pokémon search legality (Tier Shift AAA banlist)
     // ============================================================
 
-    function patchTeambuilderStatForm() {
-        const RoomClass =
-              window.TeambuilderRoom;
-
-        if (!RoomClass) {
-            return false;
-        }
-
-        const prototype =
-              RoomClass.prototype;
-
-        if (
-            !prototype ||
-            typeof prototype.updateStatForm !==
-            'function'
-        ) {
-            return false;
-        }
-
-        if (
-            prototype.updateStatForm
-            .__tierShiftPatched
-        ) {
-            return true;
-        }
-
-        const originalUpdateStatForm =
-              prototype.updateStatForm;
-
-
-        prototype.updateStatForm =
-            function (setGuessed) {
-
-            const result =
-                  originalUpdateStatForm.call(
-                      this,
-                      setGuessed
-                  );
-
-
-            // ------------------------------------------------
-            // Normal formats
-            // ------------------------------------------------
-
-            if (
-                !isTierShiftFormat() &&
-                !isMixAndMegaFormat() &&
-                !isBadNBoostedFormat() &&
-                !isGodlyGiftFormat(this)
-            ) {
-                return result;
-            }
-
-            const set =
-                  this.curSet;
-
-            if (
-                !set ||
-                !set.species
-            ) {
-                return result;
-            }
-
-
-            const species =
-                  this.curTeam.dex.species.get(
-                      set.species
-                  );
-
-            if (
-                !species ||
-                !species.exists
-            ) {
-                return result;
-            }
-
-
-            // ------------------------------------------------
-            // BASE STAT DISPLAY
-            // ------------------------------------------------
-
-            let baseStats = null;
-
-            // ------------------------------------------------
-            // GODLY GIFT
-            // ------------------------------------------------
-
-            if (isGodlyGiftFormat(this)) {
-
-                const godlyGiftStat =
-                      getGodlyGiftBaseStats(
-                          this,
-                          set
-                      );
-
-                const normalSpecies =
-                      this.curTeam.dex.species.get(
-                          set.species
-                      );
-
-                if (
-                    !normalSpecies ||
-                    !normalSpecies.exists
-                ) {
-                    return result;
-                }
-
-                baseStats =
-                    Object.assign(
-                    {},
-                    normalSpecies.baseStats
-                );
-
-                if (godlyGiftStat) {
-                    baseStats[
-                        godlyGiftStat.stat
-                    ] =
-                        godlyGiftStat.value;
-                }
-
-            } else if (isMixAndMegaFormat()) {
-
-                baseStats =
-                    getMixAndMegaBaseStats(set);
-
-            } else if (isBadNBoostedFormat()) {
-
-                baseStats =
-                    getBadNBoostedBaseStats(
-                    set,
-                    this
-                );
-
-            } else {
-
-                const boost =
-                      getTierShiftBoost(
-                          species.tier
-                      );
-
-                if (!boost) {
-                    return result;
-                }
-
-                baseStats = {
-                    hp: species.baseStats.hp,
-                    atk: species.baseStats.atk + boost,
-                    def: species.baseStats.def + boost,
-                    spa: species.baseStats.spa + boost,
-                    spd: species.baseStats.spd + boost,
-                    spe: species.baseStats.spe + boost
-                };
-            }
-
-
-            if (!baseStats) {
-                return result;
-            }
-
-
-            const baseStatsRows =
-                  this.$chart.find(
-                      '.basestatscol > div'
-                  );
-
-            if (!baseStatsRows.length) {
-                return result;
-            }
-
-
-            const statOrder = [
-                'hp',
-                'atk',
-                'def',
-                'spa',
-                'spd',
-                'spe'
-            ];
-
-            for (
-                let i = 0;
-                i < statOrder.length;
-                i++
-            ) {
-
-                const stat =
-                      statOrder[i];
-
-                const row =
-                      baseStatsRows.eq(i + 1);
-
-                row.find('b').text(
-                    baseStats[stat]
-                );
-            }
-
-
-            // ------------------------------------------------
-            // MIX AND MEGA SPEED NOTE
-            // ------------------------------------------------
-
-
-            if (isMixAndMegaFormat()) {
-
-                const item =
-                      this.curTeam.dex.items.get(set.item);
-
-                /*
-     * Only show this note for actual Mega Stones.
-     *
-     * This excludes things like:
-     * - Red Orb
-     * - Blue Orb
-     * - Lustrous Orb
-     *
-     * because those don't use a normal Mega Evolution.
-     */
-                const baseStatsColumn =
-                      this.$chart.find('.basestatscol');
-
-                baseStatsColumn.css(
-                    'position',
-                    'relative'
-                );
-                let note =
-                    this.$chart.find(
-                        '.mnm-speed-note'
-                    );
-
-                if (!note.length) {
-
-                    note = $(
-                        '<div class="mnm-speed-note" style="' +
-                        'position: absolute;' +
-                        'left: 300px;' +
-                        'top: 300px;' +
-                        'z-index: 10;' +
-                        '">' +
-                        'Note: Speed is ' +
-                        '<span class="mnm-speed-value">0</span>' +
-                        ' before Mega Evolving' +
-                        '</div>'
-                    );
-
-
-                    this.$chart
-                        .find('.basestatscol')
-                        .after(note);
-                }
-
-                /*
-         * Use Showdown's ORIGINAL stat calculation.
-         *
-         * This gives the normal pre-Mega Speed,
-         * including IVs, EVs, level, and nature.
-         */
-                updateMixAndMegaSpeedNote(this);
-                updateMixAndMegaSpeedNotePosition(this);
-            }
-
-            return result;
-        };
-
-
-        prototype.updateStatForm
-            .__tierShiftPatched = true;
-
-        prototype.updateStatForm
-            .__tierShiftOriginal =
-            originalUpdateStatForm;
-
-        console.log(
-            '[Tier Shift] TeambuilderRoom.updateStatForm patched'
-        );
-
-        return true;
-    }
-
-    function patchTeambuilderStatSlider() {
-        const RoomClass = window.TeambuilderRoom;
-
-        if (!RoomClass) return false;
-
-        const prototype = RoomClass.prototype;
-
-        if (
-            !prototype ||
-            typeof prototype.statSlide !== 'function'
-        ) {
-            return false;
-        }
-
-        if (prototype.statSlide.__tierShiftPatched) {
-            return true;
-        }
-
-        const originalStatSlide =
-              prototype.statSlide;
-
-        prototype.statSlide = function (...args) {
-
-            const result =
-                  originalStatSlide.apply(this, args);
-
-            if (isMixAndMegaFormat()) {
-                requestAnimationFrame(() => {
-                    updateMixAndMegaSpeedNote(this);
+    function patchTsaSearchLegality() {
+        const proto = window.BattlePokemonSearch?.prototype;
+
+        return patchMethod(proto, 'getBaseResults', '__qolPatched', (original) =>
+            function () {
+                if (this.format !== 'tiershiftaaa') return original.call(this);
+
+                // Make sure we've asked the server for the current banlist;
+                // this is a no-op once it's loaded (or already requested).
+                requestTSABanlist();
+
+                // Base legal pool must come from Gen 9, not TSA's own (stale)
+                // format data, then we apply TSA's Pokémon bans on top.
+                const savedFormat = this.format;
+                this.format = 'gen9';
+                const gen9Results = original.call(this);
+                this.format = savedFormat;
+
+                return gen9Results.filter((result) => {
+                    if (result[0] !== this.searchType) return true;
+
+                    const id = result[1];
+                    if (tsaBanlist.has(id)) return false;
+
+                    // Arceus is banned as a species, so every forme is banned.
+                    const species = this.dex.species.get(id);
+                    return species?.baseSpecies !== 'Arceus';
                 });
             }
-
-            return result;
-        };
-
-        prototype.statSlide.__tierShiftPatched = true;
-        prototype.statSlide.__tierShiftOriginal =
-            originalStatSlide;
-
-        console.log(
-            '[Tier Shift] TeambuilderRoom.statSlide patched'
-        );
-
-        return true;
-    }
-
-function patchBattleTooltipSpeedRange() {
-    if (!window.app?.rooms) return false;
-
-    let patchedAny = false;
-
-    for (const room of Object.values(window.app.rooms)) {
-        const tooltips = room?.tooltips;
-
-        if (
-            !tooltips ||
-            tooltips.constructor?.name !== 'BattleTooltips' ||
-            typeof tooltips.getSpeedRange !== 'function'
-        ) {
-            continue;
-        }
-
-        const proto = Object.getPrototypeOf(tooltips);
-
-        if (proto.__speedRangePatched) {
-            patchedAny = true;
-            continue;
-        }
-
-        const originalGetSpeedRange = proto.getSpeedRange; 
-
-        proto.getSpeedRange = function (pokemon, ...args) {
-            console.log('[SpeedRange HOOK]', pokemon, pokemon?.item);
-            let originalGetSpecies = null;
-            let speciesWasReplaced = false;
-
-            try {
-                const battle = this.battle;
-                const rules = battle?.rules || {};
-
-                const isTierShift =
-                    Object.keys(rules).some(rule =>
-                        String(rule).toLowerCase().includes('tier shift')
-                    ) ||
-                    String(battle?.format?.id || '')
-                        .toLowerCase()
-                        .includes('tiershift');
-
-                const isMixAndMega =
-                    String(battle?.format?.id || '')
-                        .toLowerCase()
-                        .includes('mixandmega');
-
-                if (!pokemon?.getSpecies) {
-                    return originalGetSpeedRange.call(this, pokemon, ...args);
-                }
-
-                originalGetSpecies = pokemon.getSpecies;
-                const originalSpecies =
-                    originalGetSpecies.call(pokemon);
-
-                if (!originalSpecies?.baseStats) {
-                    return originalGetSpeedRange.call(this, pokemon, ...args);
-                }
-
-                // TIER SHIFT
-                if (isTierShift) {
-                    const boost =
-                        typeof getTierShiftBoost === 'function'
-                            ? getTierShiftBoost(originalSpecies.tier)
-                            : 0;
-
-                    if (boost) {
-                        const shiftedSpecies = {
-                            ...originalSpecies,
-                            baseStats: {
-                                ...originalSpecies.baseStats,
-                                spe:
-                                    originalSpecies.baseStats.spe +
-                                    boost
-                            }
-                        };
-
-                        pokemon.getSpecies = function () {
-                            return shiftedSpecies;
-                        };
-
-                        speciesWasReplaced = true;
-
-                        return originalGetSpeedRange.call(
-                            this,
-                            pokemon,
-                            ...args
-                        );
-                    }
-                }
-
-// MIX AND MEGA
-// MIX AND MEGA
-if (pokemon.item) {
-    const item = this.battle.dex.items.get(pokemon.item);
-
-    console.log('[MnM DEBUG]', {
-        item: pokemon.item,
-        itemData: item,
-        megaStone: item?.megaStone,
-    });
-
-    if (item?.megaStone) {
-        const formeName = Object.values(item.megaStone)[0];
-        const formeSpecies =
-            this.battle.dex.species.get(formeName);
-
-        console.log('[MnM DEBUG] forme', {
-            formeName,
-            formeSpecies,
-            originalSpecies,
-        });
-
-        if (formeSpecies?.exists) {
-            let baseSpecies = formeSpecies;
-
-            if (formeSpecies.name === 'Zygarde-Mega') {
-                baseSpecies =
-                    this.battle.dex.species.get('Zygarde-Complete');
-
-            } else if (formeSpecies.isMega && formeSpecies.battleOnly) {
-                baseSpecies =
-                    this.battle.dex.species.get(
-                        Array.isArray(formeSpecies.battleOnly)
-                            ? formeSpecies.battleOnly[0]
-                            : formeSpecies.battleOnly
-                    );
-
-            } else if (formeSpecies.baseSpecies) {
-                baseSpecies =
-                    this.battle.dex.species.get(
-                        formeSpecies.baseSpecies
-                    );
-            }
-
-            console.log('[MnM DEBUG] stats', {
-                originalSpeed: originalSpecies.baseStats.spe,
-                formeSpeed: formeSpecies.baseStats.spe,
-                baseSpeed: baseSpecies?.baseStats?.spe,
-                delta:
-                    formeSpecies.baseStats.spe -
-                    baseSpecies?.baseStats?.spe,
-            });
-
-            if (baseSpecies?.exists) {
-                const mixedSpecies = {
-                    ...originalSpecies,
-                    baseStats: {
-                        ...originalSpecies.baseStats,
-                        spe:
-                            originalSpecies.baseStats.spe +
-                            formeSpecies.baseStats.spe -
-                            baseSpecies.baseStats.spe
-                    }
-                };
-
-                pokemon.getSpecies = function () {
-                    return mixedSpecies;
-                };
-
-                speciesWasReplaced = true;
-
-                return originalGetSpeedRange.call(
-                    this,
-                    pokemon,
-                    ...args
-                );
-            }
-        }
-    }
-}
-
-                return originalGetSpeedRange.call(
-                    this,
-                    pokemon,
-                    ...args
-                );
-
-            } finally {
-                if (
-                    speciesWasReplaced &&
-                    pokemon &&
-                    originalGetSpecies
-                ) {
-                    pokemon.getSpecies = originalGetSpecies;
-                }
-            }
-        };
-
-        proto.__speedRangePatched = true;
-        patchedAny = true;
-
-        console.log(
-            '[Tier Shift] Patched BattleTooltips.getSpeedRange'
         );
     }
 
-    return patchedAny;
-}
+    // ============================================================
+    // PATCH: Pokémon search legality (Godly Gift Restricted list)
+    // ============================================================
 
-    patchBattleTooltipSpeedRange();
+    function patchGodlyGiftSearchLegality() {
+        const search = getTeambuilderRoom()?.search?.engine?.typedSearch;
+        const proto = findPrototypeWithMethod(search, 'getResults');
+
+        return patchMethod(proto, 'getResults', '__qolGodlyGiftPatched', (original) =>
+            function (filters, sortCol, reverseSort) {
+                const result = original.call(this, filters, sortCol, reverseSort);
+                if (this.format !== 'godlygift') return result;
+
+                const room = getTeambuilderRoom();
+                const illegalIds = room && getGodlyGiftIllegalIds(room);
+                if (!illegalIds?.size) return result;
+
+                const legal = [];
+                const illegal = [];
+
+                for (const row of result) {
+                    if (row[0] !== this.searchType) {
+                        legal.push(row);
+                        continue;
+                    }
+
+                    const id = row[1];
+                    const isIllegal = [...illegalIds].some(
+                        (bannedId) => id === bannedId || id.startsWith(bannedId)
+                    );
+
+                    (isIllegal ? illegal : legal).push(row);
+                }
+
+                if (!illegal.length) return result;
+
+                return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: Pokémon search sort (Tier Shift / Bad 'n Boosted)
+    // ============================================================
+
+    function patchSearchSort() {
+        const proto = window.BattlePokemonSearch?.prototype;
+
+        return patchMethod(proto, 'sort', '__qolPatched', (original) =>
+            function (results, sortCol, reverseSort) {
+                const mod = getActiveMod();
+
+                if (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED) {
+                    return original.call(this, results, sortCol, reverseSort);
+                }
+
+                const order = reverseSort ? -1 : 1;
+                const statsFor = (id) => searchListStats(this.dex.species.get(id), mod);
+
+                if (STATS.includes(sortCol)) {
+                    return results.sort(
+                        (a, b) => (statsFor(b[1])[sortCol] - statsFor(a[1])[sortCol]) * order
+                    );
+                }
+
+                if (sortCol === 'bst') {
+                    const bst = (stats) => STATS.reduce((sum, stat) => sum + stats[stat], 0);
+                    return results.sort((a, b) => (bst(statsFor(b[1])) - bst(statsFor(a[1]))) * order);
+                }
+
+                return original.call(this, results, sortCol, reverseSort);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: Pokémon search row display (Tier Shift / Bad 'n Boosted)
+    // ============================================================
+
+    function patchSearchRenderer() {
+        const proto = window.BattleSearch?.prototype;
+
+        return patchMethod(proto, 'renderPokemonRow', '__qolPatched', (original) =>
+            function (pokemon, matchStart, matchLength, errorMessage, attrs) {
+                const mod = getActiveMod();
+
+                if (!pokemon || (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED)) {
+                    return original.call(this, pokemon, matchStart, matchLength, errorMessage, attrs);
+                }
+
+                const shifted = Object.assign({}, pokemon, {
+                    baseStats: searchListStats(pokemon, mod),
+                });
+
+                return original.call(this, shifted, matchStart, matchLength, errorMessage, attrs);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: Teambuilder stat calculation (all 4 mods)
+    // ============================================================
+
+    function patchGetStat() {
+        const proto = window.TeambuilderRoom?.prototype;
+
+        return patchMethod(proto, 'getStat', '__qolPatched', (original) =>
+            function (stat, set, evOverride, natureOverride) {
+                const callOriginal = () =>
+                    original.call(this, stat, set, evOverride, natureOverride);
+
+                set = set || this.curSet;
+                if (!set) return 0;
+
+                const mod = getActiveMod(this);
+                if (!mod) return callOriginal();
+
+                const dex = this.curTeam?.dex;
+                const baseStats = computeModBaseStats(mod, { dex, set, room: this });
+                if (!baseStats) return callOriginal();
+
+                return withSpeciesBaseStats(dex, set.species, baseStats, callOriginal);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: in-battle stat guesser (Tier Shift only)
+    // ============================================================
+
+    function patchBattleStatGuesserGetStat() {
+        const proto = window.BattleStatGuesser?.prototype;
+
+        return patchMethod(proto, 'getStat', '__qolBattlePatched', (original) =>
+            function (stat, set, evOverride, natureOverride) {
+                const callOriginal = () =>
+                    original.call(this, stat, set, evOverride, natureOverride);
+
+                const formatid = String(this.formatid || '').toLowerCase();
+                if (!formatid.includes('tiershift') || !set?.species || !this.dex?.species?.get) {
+                    return callOriginal();
+                }
+
+                const baseStats = tierShiftBaseStats(this.dex, set);
+                if (!baseStats) return callOriginal();
+
+                return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: in-battle EV/nature optimizer (Godly Gift only)
+    // ============================================================
+
+    function patchBattleStatGuesserGuess() {
+        const proto = window.BattleStatGuesser?.prototype;
+
+        return patchMethod(proto, 'guess', '__qolGodlyGiftPatched', (original) =>
+            function (set) {
+                const callOriginal = () => original.call(this, set);
+
+                const room = getTeambuilderRoom();
+                if (!isGodlyGiftFormat(room) || !set?.species || !this.dex?.species?.get) {
+                    return callOriginal();
+                }
+
+                const baseStats = godlyGiftBaseStats(room, set);
+                if (!baseStats) return callOriginal();
+
+                return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: base stat column + Mix and Mega speed note
+    // ============================================================
+
+    function patchUpdateStatForm() {
+        const proto = window.TeambuilderRoom?.prototype;
+
+        return patchMethod(proto, 'updateStatForm', '__qolPatched', (original) =>
+            function (setGuessed) {
+                const result = original.call(this, setGuessed);
+
+                const mod = getActiveMod(this);
+                if (!mod) return result;
+
+                const set = this.curSet;
+                if (!set?.species) return result;
+
+                const dex = this.curTeam?.dex;
+                const baseStats = computeModBaseStats(mod, { dex, set, room: this });
+                if (!baseStats) return result;
+
+                const rows = this.$chart.find('.basestatscol > div');
+                if (!rows.length) return result;
+
+                STATS.forEach((stat, i) => rows.eq(i + 1).find('b').text(baseStats[stat]));
+
+                if (mod === MOD.MIX_AND_MEGA) {
+                    renderMixAndMegaSpeedNote(this);
+                }
+
+                return result;
+            }
+        );
+    }
+
+    function patchStatSlide() {
+        const proto = window.TeambuilderRoom?.prototype;
+
+        return patchMethod(proto, 'statSlide', '__qolPatched', (original) =>
+            function (...args) {
+                const result = original.apply(this, args);
+
+                if (getActiveMod(this) === MOD.MIX_AND_MEGA) {
+                    requestAnimationFrame(() => updateMixAndMegaSpeedNote(this));
+                }
+
+                return result;
+            }
+        );
+    }
+
+    // ============================================================
+    // PATCH: in-battle hover speed range (Tier Shift / Mix and Mega)
+    // ============================================================
+
+    function patchTooltipSpeedRange() {
+        const rooms = window.app?.rooms;
+        if (!rooms) return false;
+
+        let patchedAny = false;
+
+        for (const room of Object.values(rooms)) {
+            const tooltips = room?.tooltips;
+
+            if (
+                !tooltips ||
+                tooltips.constructor?.name !== 'BattleTooltips' ||
+                typeof tooltips.getSpeedRange !== 'function'
+            ) {
+                continue;
+            }
+
+            const proto = Object.getPrototypeOf(tooltips);
+
+            const patched = patchMethod(proto, 'getSpeedRange', '__qolPatched', (original) =>
+                function (pokemon, ...args) {
+                    const callOriginal = () => original.call(this, pokemon, ...args);
+
+                    if (!pokemon?.getSpecies) return callOriginal();
+
+                    const originalSpecies = pokemon.getSpecies();
+                    if (!originalSpecies?.baseStats) return callOriginal();
+
+                    const battle = this.battle;
+                    const rules = battle?.rules || {};
+                    const formatId = String(battle?.format?.id || '').toLowerCase();
+
+                    const isTierShift =
+                        Object.keys(rules).some((r) => String(r).toLowerCase().includes('tier shift')) ||
+                        formatId.includes('tiershift');
+                    const isMixAndMega = formatId.includes('mixandmega');
+
+                    if (isTierShift) {
+                        const boost = getTierShiftBoost(originalSpecies.tier);
+                        if (boost) {
+                            const shifted = Object.assign({}, originalSpecies, {
+                                baseStats: Object.assign({}, originalSpecies.baseStats, {
+                                    spe: originalSpecies.baseStats.spe + boost,
+                                }),
+                            });
+                            return withOverriddenGetSpecies(pokemon, shifted, callOriginal);
+                        }
+                    }
+
+                    if (isMixAndMega && pokemon.item) {
+                        const item = battle.dex.items.get(pokemon.item);
+                        const delta = mixAndMegaStatDelta(battle.dex, item, 'spe');
+
+                        if (delta) {
+                            const shifted = Object.assign({}, originalSpecies, {
+                                baseStats: Object.assign({}, originalSpecies.baseStats, {
+                                    spe: originalSpecies.baseStats.spe + delta,
+                                }),
+                            });
+                            return withOverriddenGetSpecies(pokemon, shifted, callOriginal);
+                        }
+                    }
+
+                    return callOriginal();
+                }
+            );
+
+            if (patched) patchedAny = true;
+        }
+
+        return patchedAny;
+    }
 
     // ============================================================
     // PATCH EVERYTHING
     // ============================================================
 
     function patchEverything() {
-        const searchLegalityPatched = patchBattlePokemonSearchLegality();
-        const godlyGiftLegalityPatched = patchGodlyGiftSearch();
-        const searchPatched = patchBattlePokemonSearch();
-        const rendererPatched = patchBattleSearchRenderer();
-        const statPatched = patchTeambuilderGetStat();
-        const battleStatPatched = patchBattleStatGuesser();
-        const statFormPatched = patchTeambuilderStatForm();
-        const statSliderPatched = patchTeambuilderStatSlider();
-        const tsaReceiverPatched = patchTSABanlistReceiver();
-        const godlyGiftStatGuesserPatched = patchGodlyGiftStatGuesser();
-        const speedRangePatched = patchBattleTooltipSpeedRange();
+        const results = [
+            patchServerReceive(),
+            patchTsaSearchLegality(),
+            patchGodlyGiftSearchLegality(),
+            patchSearchSort(),
+            patchSearchRenderer(),
+            patchGetStat(),
+            patchBattleStatGuesserGetStat(),
+            patchBattleStatGuesserGuess(),
+            patchUpdateStatForm(),
+            patchStatSlide(),
+            patchTooltipSpeedRange(),
+        ];
 
+        // Proactively fetch these two server-side banlists as soon as the
+        // format is detected, so they're ready before the user opens the
+        // search. This deliberately uses window.room (the room actually on
+        // screen right now) rather than the persistent teambuilder room
+        // reference — app.send() posts to whatever room is currently
+        // focused, and app.rooms.teambuilder can still exist in the
+        // background after the user has switched to another room/PM, which
+        // would otherwise leak the /tier command into whatever's focused.
         if (isGodlyGiftFormat(window.room)) {
             requestGGBanlist();
         }
-        return (
-            tsaReceiverPatched &&
-            searchLegalityPatched &&
-            godlyGiftLegalityPatched &&
-            godlyGiftStatGuesserPatched &&
-            searchPatched &&
-            speedRangePatched &&
-            rendererPatched &&
-            statPatched &&
-            statFormPatched &&
-            statSliderPatched
-        );
+        if (isTierShiftAAAFormat(window.room)) {
+            requestTSABanlist();
+        }
+
+        return results.every(Boolean);
     }
 
-
     // ============================================================
-    // EXPOSE DEBUG FUNCTIONS
-    // ============================================================
-
-
-    // ============================================================
-    // WAIT FOR SHOWDOWN
+    // WAIT FOR SHOWDOWN TO FINISH LOADING
     // ============================================================
 
     let attempts = 0;
+    const MAX_ATTEMPTS = 300; // ~30s at 100ms
 
-    const patchInterval =
-        setInterval(() => {
+    const patchInterval = setInterval(() => {
+        attempts++;
 
-            attempts++;
+        if (patchEverything()) {
+            clearInterval(patchInterval);
+            console.log(LOG, 'All patches applied');
+            return;
+        }
 
-            if (patchEverything()) {
-
-                clearInterval(
-                    patchInterval
-                );
-
-                console.log(
-                    '[Tier Shift] All Teambuilder patches ready'
-                );
-
-                return;
-            }
-
-            // Stop after ~30 seconds.
-            if (attempts >= 300) {
-
-                clearInterval(
-                    patchInterval
-                );
-
-                console.warn(
-                    '[Tier Shift] Could not patch all Teambuilder functions'
-                );
-            }
-
-        }, 100);
-
+        if (attempts >= MAX_ATTEMPTS) {
+            clearInterval(patchInterval);
+            console.warn(LOG, 'Gave up patching after', MAX_ATTEMPTS, 'attempts');
+        }
+    }, 100);
 
     // ============================================================
-    // DEBUG TEST
+    // DEBUG / CONSOLE API
     // ============================================================
 
     window.TierShiftTeambuilder = {
         getTierShiftBoost,
-        getShiftedStat,
-        getShiftedBST,
-        getMixAndMegaBaseStats,
-        getGodlyGiftBaseStats,
+        getShiftedStat: (species, stat) => (tierShiftModifiedStats(species) || species?.baseStats)?.[stat],
+        getShiftedBST: (species) => {
+            const stats = tierShiftModifiedStats(species) || species?.baseStats;
+            return stats ? STATS.reduce((sum, stat) => sum + stats[stat], 0) : 0;
+        },
+        getMixAndMegaBaseStats: (set) => mixAndMegaBaseStats(window.room?.curTeam?.dex, set),
+        getGodlyGiftBaseStats: godlyGiftDonation,
         getGodlyGiftIllegalIds,
         parseGodlyGiftRestricted,
-        isTierShiftFormat,
-        isMixAndMegaFormat,
-        isBadNBoostedFormat,
+        isTierShiftFormat: (room) => getActiveMod(room) === MOD.TIER_SHIFT,
+        isMixAndMegaFormat: (room) => getActiveMod(room) === MOD.MIX_AND_MEGA,
+        isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED,
         isGodlyGiftFormat,
+        isTierShiftAAAFormat,
         requestTSABanlist,
         requestGGBanlist,
-        patchBattleStatGuesser,
-        getBadNBoostedBaseStats,
-        patch: patchEverything
+        patchBattleStatGuesser: patchBattleStatGuesserGetStat,
+        getBadNBoostedBaseStats: (set, room) => badNBoostedBaseStats(room?.curTeam?.dex, set),
+        patch: patchEverything,
     };
-
 })();
-
-
-    
