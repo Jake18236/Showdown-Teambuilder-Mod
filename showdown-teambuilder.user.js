@@ -567,6 +567,83 @@
         return species.baseStats;
     }
 
+
+    // ============================================================
+    // POKEMON SEARCH: /ds-STYLE TYPE EFFECTIVENESS FILTERS
+    // ============================================================
+
+    function toSearchId(text) {
+        return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+
+    function resolveTypeName(dex, text) {
+        const id = toSearchId(text);
+        if (!id) return null;
+
+        const typeChart = window.BattleTypeChart || {};
+        for (const typeName of Object.keys(typeChart)) {
+            if (toSearchId(typeName) === id) return typeName;
+        }
+
+        const type = dex?.types?.get?.(text);
+        if (type?.exists || type?.name) return type.name || text;
+
+        return null;
+    }
+
+    function resolveEffectivenessTarget(dex, text) {
+        const typeName = resolveTypeName(dex, text);
+        if (typeName) return typeName;
+
+        const move = dex?.moves?.get?.(text);
+        if (!move?.exists) return null;
+        if (move.category === 'Status') return null;
+
+        return move.name || move.id;
+    }
+
+    function parseEffectivenessSearch(query, dex) {
+        const match = String(query || '').trim().match(/^(resists|weak)\s+(.+)$/i);
+        if (!match) return null;
+
+        const target = resolveEffectivenessTarget(dex, match[2].trim());
+        if (!target) return null;
+
+        return { kind: match[1].toLowerCase(), target };
+    }
+
+    function pokemonMatchesEffectiveness(dex, species, searchKind, target) {
+        if (!dex || !species?.types?.length || !dex.getEffectiveness || !dex.getImmunity) {
+            return false;
+        }
+
+        const move = dex.moves.get(target);
+        const attackingType = move?.exists ? move.type : resolveTypeName(dex, target);
+        if (!attackingType) return false;
+
+        const notImmune =
+            (move?.id === 'thousandarrows' || dex.getImmunity(attackingType, species)) &&
+            !(move?.id === 'sheercold' && dex.gen >= 7 && species.types.includes('Ice'));
+
+        let effectiveness = 0;
+        if (notImmune && !move?.ohko && move?.damage === undefined) {
+            for (const defenderType of species.types) {
+                const baseMod = dex.getEffectiveness(attackingType, defenderType);
+                const moveMod = move?.onEffectiveness?.call(
+                    { dex },
+                    baseMod,
+                    null,
+                    defenderType,
+                    move
+                );
+                effectiveness += typeof moveMod === 'number' ? moveMod : baseMod;
+            }
+        }
+
+        if (searchKind === 'resists') return !notImmune || effectiveness < 0;
+        return notImmune && effectiveness >= 1;
+    }
+
     // ============================================================
     // PATCH: server message receiver (banlists)
     // ============================================================
@@ -682,6 +759,61 @@
             }
         );
     }
+
+    // ============================================================
+    // PATCH: Pokemon search filters (resists / weak)
+    // ============================================================
+
+    function patchEffectivenessSearchFilters() {
+        const proto = window.BattlePokemonSearch?.prototype;
+
+        return patchMethod(proto, 'filter', '__qolEffectivenessPatched', (original) =>
+            function (row, filters) {
+                if (!filters?.length) return original.call(this, row, filters);
+
+                const effectivenessFilters = filters.filter(([type]) => type === 'resists' || type === 'weak');
+                if (!effectivenessFilters.length) return original.call(this, row, filters);
+
+                const normalFilters = filters.filter(([type]) => type !== 'resists' && type !== 'weak');
+                if (!original.call(this, row, normalFilters)) return false;
+                if (row[0] !== 'pokemon') return true;
+
+                const species = this.dex.species.get(row[1]);
+                for (const [filterType, value] of effectivenessFilters) {
+                    if (!pokemonMatchesEffectiveness(this.dex, species, filterType, value)) return false;
+                }
+
+                return true;
+            }
+        );
+    }
+
+    function patchEffectivenessSearchBar() {
+        const search = getTeambuilderRoom()?.search?.engine;
+        const proto = window.DexSearch?.prototype || findPrototypeWithMethod(search, 'find');
+
+        return patchMethod(proto, 'find', '__qolEffectivenessPatched', (original) =>
+            function (query) {
+                const typedSearch = this.typedSearch;
+                const parsed = typedSearch?.searchType === 'pokemon' &&
+                    parseEffectivenessSearch(query, typedSearch.dex);
+
+                if (!parsed) return original.call(this, query);
+
+                const cacheKey = `${parsed.kind}:${toSearchId(parsed.target)}`;
+                if (this.query === cacheKey && this.results) return false;
+
+                const filters = [...(this.filters || []), [parsed.kind, parsed.target]];
+                this.query = cacheKey;
+                this.exactMatch = true;
+                this.results = typedSearch.getResults(filters, this.sortCol, this.reverseSort);
+                this.selection = this.getFirstResultIndex();
+
+                return true;
+            }
+        );
+    }
+
 
     // ============================================================
     // PATCH: Pokémon search sort (Tier Shift / Bad 'n Boosted)
@@ -953,6 +1085,8 @@
         const results = [
             patchServerReceive(),
             patchTsaSearchLegality(),
+            patchEffectivenessSearchFilters(),
+            patchEffectivenessSearchBar(),
             patchGodlyGiftSearchLegality(),
             patchSearchSort(),
             patchSearchRenderer(),
@@ -1027,6 +1161,8 @@
         requestTSABanlist,
         requestGGBanlist,
         patchBattleStatGuesser: patchBattleStatGuesserGetStat,
+        parseEffectivenessSearch: (query) => parseEffectivenessSearch(query, window.room?.curTeam?.dex || Dex),
+        pokemonMatchesEffectiveness,
         getBadNBoostedBaseStats: (set, room) => badNBoostedBaseStats(room?.curTeam?.dex, set),
         patch: patchEverything,
     };
