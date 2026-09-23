@@ -613,35 +613,87 @@
     }
 
     function pokemonMatchesEffectiveness(dex, species, searchKind, target) {
-        if (!dex || !species?.types?.length || !dex.getEffectiveness || !dex.getImmunity) {
-            return false;
-        }
+        if (!species?.types?.length) return false;
 
-        const move = dex.moves.get(target);
-        const attackingType = move?.exists ? move.type : resolveTypeName(dex, target);
+        const typeChart = window.BattleTypeChart;
+        if (!typeChart) return false;
+
+        // Resolve target to an attacking type.
+        const move = dex?.moves?.get?.(target);
+
+        const attackingType = move?.exists
+        ? move.type
+        : resolveTypeName(dex, target);
+
         if (!attackingType) return false;
 
-        const notImmune =
-            (move?.id === 'thousandarrows' || dex.getImmunity(attackingType, species)) &&
-            !(move?.id === 'sheercold' && dex.gen >= 7 && species.types.includes('Ice'));
+        let effectiveness = 1;
 
-        let effectiveness = 0;
-        if (notImmune && !move?.ohko && move?.damage === undefined) {
-            for (const defenderType of species.types) {
-                const baseMod = dex.getEffectiveness(attackingType, defenderType);
-                const moveMod = move?.onEffectiveness?.call(
-                    { dex },
-                    baseMod,
-                    null,
-                    defenderType,
-                    move
-                );
-                effectiveness += typeof moveMod === 'number' ? moveMod : baseMod;
+        for (const defenderType of species.types) {
+            // IMPORTANT:
+            //
+            // BattleTypeChart is organized by DEFENDING type.
+            //
+            // Example:
+            //   BattleTypeChart.water.damageTaken.Fighting
+            //
+            // asks:
+            //   "How does Fighting affect Water?"
+            //
+            // NOT:
+            //   BattleTypeChart.fighting.damageTaken.Water
+            //
+            const defenderId = toSearchId(defenderType);
+            const defenderChart = typeChart[defenderId];
+
+            if (!defenderChart?.damageTaken) {
+                return false;
+            }
+
+            const chartValue =
+                  defenderChart.damageTaken[attackingType];
+
+            if (chartValue === undefined) {
+                return false;
+            }
+
+            // Showdown damageTaken values:
+            //
+            // 0 = neutral
+            // 1 = super-effective
+            // 2 = resisted
+            // 3 = immune
+
+            if (chartValue === 3) {
+                // Immunity overrides every other type.
+                effectiveness = 0;
+                break;
+            }
+
+            if (chartValue === 1) {
+                effectiveness *= 2;
+            } else if (chartValue === 2) {
+                effectiveness *= 0.5;
             }
         }
 
-        if (searchKind === 'resists') return !notImmune || effectiveness < 0;
-        return notImmune && effectiveness >= 1;
+        if (searchKind === 'weak') {
+            // "weak earthquake"
+            //
+            // Earthquake must actually be super-effective.
+            return effectiveness > 1;
+        }
+
+        if (searchKind === 'resists') {
+            // "resists cc"
+            //
+            // Close Combat must deal reduced damage.
+            //
+            // This currently includes immunity.
+            return effectiveness < 1;
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -765,54 +817,105 @@
     // ============================================================
 
     function patchEffectivenessSearchFilters() {
-        const proto = window.BattlePokemonSearch?.prototype;
+    const proto = window.BattlePokemonSearch?.prototype;
 
-        return patchMethod(proto, 'filter', '__qolEffectivenessPatched', (original) =>
-            function (row, filters) {
-                if (!filters?.length) return original.call(this, row, filters);
+    return patchMethod(proto, 'filter', '__qolEffectivenessPatched', (original) =>
+        function (row, filters) {
+            if (!filters?.length) {
+                return original.call(this, row, filters);
+            }
 
-                const effectivenessFilters = filters.filter(([type]) => type === 'resists' || type === 'weak');
-                if (!effectivenessFilters.length) return original.call(this, row, filters);
+            const effectivenessFilters = filters.filter(
+                ([type]) => type === 'resists' || type === 'weak'
+            );
 
-                const normalFilters = filters.filter(([type]) => type !== 'resists' && type !== 'weak');
-                if (!original.call(this, row, normalFilters)) return false;
-                if (row[0] !== 'pokemon') return true;
+            if (!effectivenessFilters.length) {
+                return original.call(this, row, filters);
+            }
 
-                const species = this.dex.species.get(row[1]);
-                for (const [filterType, value] of effectivenessFilters) {
-                    if (!pokemonMatchesEffectiveness(this.dex, species, filterType, value)) return false;
-                }
+            const normalFilters = filters.filter(
+                ([type]) => type !== 'resists' && type !== 'weak'
+            );
 
+            // Preserve Showdown's normal filters.
+            if (!original.call(this, row, normalFilters)) {
+                return false;
+            }
+
+            // Headers and non-Pokémon rows should remain visible.
+            if (row[0] !== 'pokemon') {
                 return true;
             }
-        );
-    }
+
+            const species = this.dex.species.get(row[1]);
+            if (!species?.exists) return false;
+
+            for (const [filterType, target] of effectivenessFilters) {
+                if (
+                    !pokemonMatchesEffectiveness(
+                        this.dex,
+                        species,
+                        filterType,
+                        target
+                    )
+                ) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    );
+}
 
     function patchEffectivenessSearchBar() {
-        const search = getTeambuilderRoom()?.search?.engine;
-        const proto = window.DexSearch?.prototype || findPrototypeWithMethod(search, 'find');
+    const search = getTeambuilderRoom()?.search?.engine;
+    if (!search) return false;
 
-        return patchMethod(proto, 'find', '__qolEffectivenessPatched', (original) =>
-            function (query) {
-                const typedSearch = this.typedSearch;
-                const parsed = typedSearch?.searchType === 'pokemon' &&
-                    parseEffectivenessSearch(query, typedSearch.dex);
+    const proto = findPrototypeWithMethod(search, 'find');
+    if (!proto) return false;
 
-                if (!parsed) return original.call(this, query);
+    return patchMethod(proto, 'find', '__qolEffectivenessPatched', (original) =>
+        function (query) {
+            const typedSearch = this.typedSearch;
 
-                const cacheKey = `${parsed.kind}:${toSearchId(parsed.target)}`;
-                if (this.query === cacheKey && this.results) return false;
+            const parsed =
+                typedSearch?.searchType === 'pokemon' &&
+                parseEffectivenessSearch(query, typedSearch.dex);
 
-                const filters = [...(this.filters || []), [parsed.kind, parsed.target]];
-                this.query = cacheKey;
-                this.exactMatch = true;
-                this.results = typedSearch.getResults(filters, this.sortCol, this.reverseSort);
-                this.selection = this.getFirstResultIndex();
-
-                return true;
+            if (!parsed) {
+                return original.call(this, query);
             }
-        );
-    }
+
+            const cacheKey =
+                `${parsed.kind}:${toSearchId(parsed.target)}`;
+
+            if (this.query === cacheKey && this.results) {
+                return false;
+            }
+
+            const filters = [
+                ...(this.filters || []).filter(
+                    ([type]) => type !== 'resists' && type !== 'weak'
+                ),
+                [parsed.kind, parsed.target],
+            ];
+
+            this.query = cacheKey;
+            this.exactMatch = true;
+
+            this.results = typedSearch.getResults(
+                filters,
+                this.sortCol,
+                this.reverseSort
+            );
+
+            this.selection = this.getFirstResultIndex();
+
+            return true;
+        }
+    );
+}
 
 
     // ============================================================
