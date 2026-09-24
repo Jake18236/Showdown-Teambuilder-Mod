@@ -582,6 +582,92 @@
         return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     }
 
+    // ------------------------------------------------------------
+    // "!" (negated / NOT) filter support
+    //
+    // A negated filter is stored as an ordinary [type, value] filter
+    // tuple, except `type` has a leading "!" (e.g. ['!type', 'Fire'],
+    // ['!weak', 'Fire']). That keeps every existing consumer of
+    // `this.filters` (dedup checks, the "value".split(':') round-trip
+    // used to remove a filter chip, etc.) working unmodified, since
+    // it's still just a two-element array of strings.
+    // ------------------------------------------------------------
+
+    const ALLOWED_POKEMON_FILTER_TYPES =
+          ['type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists'];
+
+    function isNegatedFilterType(type) {
+        return typeof type === 'string' && type.charCodeAt(0) === 33;// '!'
+    }
+
+    function negatedFilterType(type) {
+        return isNegatedFilterType(type) ? type : '!' + type;
+    }
+
+    function baseFilterType(type) {
+        return isNegatedFilterType(type) ? type.slice(1) : type;
+    }
+
+    // Mirrors the per-type normalization DexSearch#addFilter does
+    // natively, so a negated filter chip displays/dedupes the same
+    // way its positive counterpart would.
+    function normalizePokemonFilterValue(engine, type, value) {
+        if (type === 'type' || type === 'weak' || type === 'resists') {
+            return engine.capitalizeFirst(value);
+        }
+        if (type === 'move') {
+            return toID(value);
+        }
+        if (type === 'ability') {
+            return engine.dex.abilities.get(value).name;
+        }
+        if (type === 'tier') {
+            const tierTable = {uber: 'Uber', caplc: 'CAP LC', capnfe: 'CAP NFE'};
+            const id = toID(value);
+            return tierTable[id] || id.toUpperCase();
+        }
+        return value;
+    }
+
+    // Pushes a (possibly negated) pokemon-search filter chip, reusing
+    // the same "already have this filter" dedup rule the native
+    // addFilter uses. A negated and a positive filter of the same
+    // type/value are treated as distinct chips.
+    function pushPokemonFilter(engine, type, value, negated) {
+        if (!engine.filters) engine.filters = [];
+
+        const storedType = negated ? negatedFilterType(type) : type;
+        if (engine.sortCol === type) engine.sortCol = null;
+
+        for (const filter of engine.filters) {
+            if (filter[0] === storedType && filter[1] === value) {
+                return true;
+            }
+        }
+
+        engine.filters.push([storedType, value]);
+        engine.results = null;
+        engine.__qolEffectivenessMode = null;
+        engine.__qolNegateMode = false;
+
+        return true;
+    }
+
+    // Validates + normalizes `[type, value]` the way native addFilter
+    // would, then stores it (negated or not).
+    function addPokemonSearchFilter(engine, type, value, negated) {
+        if (type === 'weak' || type === 'resists') {
+            const target = engine.capitalizeFirst(value);
+            if (!window.BattleTypeChart?.[toID(target)]) return false;
+            return pushPokemonFilter(engine, type, target, negated);
+        }
+
+        if (!ALLOWED_POKEMON_FILTER_TYPES.includes(type)) return false;
+
+        const normalized = normalizePokemonFilterValue(engine, type, value);
+        return pushPokemonFilter(engine, type, normalized, negated);
+    }
+
     function resolveTypeName(dex, text) {
         const id = toSearchId(text);
         if (!id) return null;
@@ -702,20 +788,24 @@
 
                 for (let i = 0;i < this.filters.length;i++) {
                     const filter = this.filters[i];
+                    const negated = isNegatedFilterType(filter[0]);
+                    const kind = baseFilterType(filter[0]);
                     let text = filter[1];
 
-                    if (filter[0] === 'weak') {
+                    if (kind === 'weak') {
                         text = 'Weak ' + text.charAt(0).toUpperCase() + text.slice(1);
-                    } else if (filter[0] === 'resists') {
+                    } else if (kind === 'resists') {
                         text = 'Resists ' + text.charAt(0).toUpperCase() + text.slice(1);
                     } else {
-                        if (filter[0] === 'move') {
+                        if (kind === 'move') {
                             text = Dex.moves.get(text).name;
                         }
-                        if (filter[0] === 'pokemon') {
+                        if (kind === 'pokemon') {
                             text = Dex.species.get(text).name;
                         }
                     }
+
+                    if (negated) text = '!' + text;
 
                     buf += '<button class="filter" value="' +
                         BattleLog.escapeHTML(filter.join(':')) +
@@ -747,6 +837,7 @@
             (original) =>
             function (...args) {
                 this.__qolEffectivenessMode = null;
+                this.__qolNegateMode = false;
                 this.query = '';
                 this.exactMatch = false;
 
@@ -884,27 +975,6 @@
                 return original.call(this, row, filters);
             }
 
-            const effectivenessFilters = filters.filter(
-                ([type]) => type === 'resists' || type === 'weak'
-            );
-
-            if (!effectivenessFilters.length) {
-                return original.call(this, row, filters);
-            }
-
-            const normalFilters = filters.filter(
-                ([type]) => type !== 'resists' && type !== 'weak'
-            );
-
-            // Only run Showdown's normal filter when there actually
-            // are normal filters left.
-            if (
-                normalFilters.length &&
-                !original.call(this, row, normalFilters)
-            ) {
-                return false;
-            }
-
             if (row[0] !== 'pokemon') {
                 return true;
             }
@@ -912,15 +982,21 @@
             const species = this.dex.species.get(row[1]);
             if (!species?.exists) return false;
 
-            for (const [filterType, target] of effectivenessFilters) {
-                if (
-                    !pokemonMatchesEffectiveness(
-                        this.dex,
-                        species,
-                        filterType,
-                        target
-                    )
-                ) {
+            // Every filter (positive or negated) is tested one at a
+            // time, reusing the native single-filter logic for the
+            // ordinary types (type/move/ability/egggroup/tier) and
+            // our own logic for weak/resists. A negated entry just
+            // flips whether a match passes or fails that one
+            // condition; everything still has to hold at once.
+            for (const [rawType, target] of filters) {
+                const negated = isNegatedFilterType(rawType);
+                const type = negated ? baseFilterType(rawType) : rawType;
+
+                const matches = (type === 'weak' || type === 'resists')
+                    ? pokemonMatchesEffectiveness(this.dex, species, type, target)
+                    : original.call(this, row, [[type, target]]);
+
+                if (negated ? matches : !matches) {
                     return false;
                 }
             }
@@ -947,28 +1023,58 @@
 
                 if (typedSearch?.searchType !== 'pokemon') {
                     this.__qolEffectivenessMode = null;
+                    this.__qolNegateMode = false;
                     return original.call(this, query);
                 }
 
                 const rawQuery = String(query || '').trim();
 
-                const match = rawQuery.match(
+                // "!" is a per-token modifier, not a toggle: it only
+                // affects the filter tag you're about to add, not
+                // filter chips you've already added.
+                const negateQuery = rawQuery.startsWith('!');
+                const searchQuery = negateQuery ? rawQuery.slice(1).trim() : rawQuery;
+
+                const match = searchQuery.match(
                     /^(weak|resists)(?:\s+(.*))?$/i
                 );
 
-                // Normal search: clear all custom effectiveness state.
+                // Anything that isn't "weak"/"resists" (negated or not).
                 if (!match) {
                     this.__qolEffectivenessMode = null;
-                    this.exactMatch = false;
 
-                    return original.call(this, query);
+                    if (!negateQuery) {
+                        this.__qolNegateMode = false;
+                        this.exactMatch = false;
+                        return original.call(this, query);
+                    }
+
+                    // "!" or "!<type/ability/move>": native find() would
+                    // run toID() on this and silently drop the "!", so
+                    // we bypass it and go straight to (our patched)
+                    // textSearch with the raw query.
+                    this.__qolNegateMode = true;
+                    const cacheKey = `!:${toSearchId(searchQuery)}`;
+
+                    if (this.query === cacheKey && this.results) {
+                        return false;
+                    }
+
+                    this.query = cacheKey;
+                    this.exactMatch = true;
+                    this.results = this.textSearch(rawQuery);
+                    this.selection = this.getFirstResultIndex();
+
+                    return true;
                 }
 
                 const mode = match[1].toLowerCase();
                 const partial = (match[2] || '').trim();
 
+                this.__qolNegateMode = negateQuery;
+
                 const cacheKey =
-                      `${mode}:${toSearchId(partial)}`;
+                      `${negateQuery ? '!' : ''}${mode}:${toSearchId(partial)}`;
 
                 if (this.query === cacheKey && this.results) {
                     return false;
@@ -1000,68 +1106,35 @@
             '__qolEffectivenessAddFilterPatched',
             (original) =>
             function (entry) {
-                // A type was selected from our "Weak to" / "Resists" menu.
-                if (
-                    this.typedSearch?.searchType === 'pokemon' &&
-                    this.__qolEffectivenessMode &&
-                    entry?.[0] === 'type'
-                ) {
-                    const mode = this.__qolEffectivenessMode;
-                    const target = this.capitalizeFirst(entry[1]);
-
-                    if (!window.BattleTypeChart?.[toID(target)]) {
-                        return false;
-                    }
-
-                    if (!this.filters) {
-                        this.filters = [];
-                    }
-
-                    for (const filter of this.filters) {
-                        if (
-                            filter[0] === mode &&
-                            filter[1] === target
-                        ) {
-                            return true;
-                        }
-                    }
-
-                    this.filters.push([mode, target]);
-                    this.results = null;
-
-                    this.__qolEffectivenessMode = null;
-
-                    return true;
+                if (this.typedSearch?.searchType !== 'pokemon') {
+                    return original.call(this, entry);
                 }
 
-                // Directly supplied custom filters.
-                if (
-                    this.typedSearch?.searchType === 'pokemon' &&
-                    (entry?.[0] === 'weak' || entry?.[0] === 'resists')
-                ) {
-                    const target = this.capitalizeFirst(entry[1]);
+                // A type was selected from our "Weak to" / "Resists to"
+                // menu (possibly while typing a negated "!weak ..." query).
+                if (this.__qolEffectivenessMode && entry?.[0] === 'type') {
+                    return addPokemonSearchFilter(
+                        this,
+                        this.__qolEffectivenessMode,
+                        entry[1],
+                        this.__qolNegateMode
+                    );
+                }
 
-                    if (!window.BattleTypeChart?.[toID(target)]) {
-                        return false;
-                    }
+                const rawType = entry?.[0];
 
-                    if (!this.filters) {
-                        this.filters = [];
-                    }
+                // A row (type/move/ability/egggroup/tier) picked while a
+                // "!<query>" search was active, or a filter that's
+                // already explicitly negated (e.g. toggled via a bare
+                // "!" and then re-added).
+                if (rawType && (isNegatedFilterType(rawType) || this.__qolNegateMode)) {
+                    const type = baseFilterType(rawType);
+                    return addPokemonSearchFilter(this, type, entry[1], true);
+                }
 
-                    for (const filter of this.filters) {
-                        if (
-                            filter[0] === entry[0] &&
-                            filter[1] === target
-                        ) {
-                            return true;
-                        }
-                    }
-
-                    this.filters.push([entry[0], target]);
-                    this.results = null;
-
-                    return true;
+                // Directly supplied positive custom filters.
+                if (rawType === 'weak' || rawType === 'resists') {
+                    return addPokemonSearchFilter(this, rawType, entry[1], false);
                 }
 
                 return original.call(this, entry);
@@ -1086,14 +1159,65 @@
                     return original.call(this, query);
                 }
 
-                const q = String(query || '').trim().toLowerCase();
+                const rawQuery = String(query || '').trim();
+                const negated = rawQuery.startsWith('!');
+                const q = (negated ? rawQuery.slice(1) : rawQuery).trim().toLowerCase();
 
                 const match = q.match(/^(weak|resists)(?:\s+(.*))?$/);
 
-                // Any non-effectiveness query must clear the custom mode.
+                // Not "weak"/"resists" (negated or not).
                 if (!match) {
                     this.__qolEffectivenessMode = null;
-                    return original.call(this, query);
+
+                    if (!negated) {
+                        this.__qolNegateMode = false;
+                        return original.call(this, query);
+                    }
+
+                    this.__qolNegateMode = true;
+
+                    // Bare "!": start with every type, same as typing
+                    // "weak"/"resists" alone lists every type. Abilities
+                    // and moves only show up once you start typing
+                    // their name — there are too many to list at once.
+                    if (!q) {
+                        const typeChart = window.BattleTypeChart;
+                        const results = [['header', 'Not']];
+
+                        if (typeChart) {
+                            for (const typeName of Object.keys(typeChart)) {
+                                results.push([
+                                    'type',
+                                    toSearchId(typeName),
+                                    0,
+                                    typeName.length,
+                                ]);
+                            }
+                        }
+
+                        this.results = results;
+                        this.exactMatch = true;
+
+                        return results;
+                    }
+
+                    // "!<type/ability/move>": reuse Showdown's own
+                    // suggestion matching for the text after the "!",
+                    // keeping only type/ability/move rows. No Pokémon
+                    // (there's no supported way to exclude one named
+                    // Pokémon here, only a filter criterion) and no
+                    // egg group/tier (not something this negates).
+                    const suggestions = (original.call(this, q) || []).filter(
+                        ([rowType]) =>
+                            rowType === 'type' ||
+                            rowType === 'ability' ||
+                            rowType === 'move'
+                    );
+
+                    this.results = suggestions;
+                    this.exactMatch = true;
+
+                    return suggestions;
                 }
 
                 const mode = match[1];
@@ -1103,13 +1227,14 @@
 
                 if (!typeChart) {
                     this.__qolEffectivenessMode = null;
+                    this.__qolNegateMode = false;
                     return original.call(this, query);
                 }
 
                 const results = [
                     [
                         'header',
-                        mode === 'weak' ? 'Weak' : 'Resists'
+                        (negated ? 'Not ' : '') + (mode === 'weak' ? 'Weak' : 'Resists')
                     ],
                 ];
 
@@ -1130,6 +1255,7 @@
                 }
 
                 this.__qolEffectivenessMode = mode;
+                this.__qolNegateMode = negated;
 
                 this.results = results;
                 this.exactMatch = true;
@@ -1191,21 +1317,32 @@
             '__qolEffectivenessResultNamePatched',
             (original) =>
             function (result) {
+                if (this.typedSearch?.searchType !== 'pokemon') {
+                    return original.call(this, result);
+                }
+
                 const mode = this.__qolEffectivenessMode;
 
-                if (
-                    mode &&
-                    this.typedSearch?.searchType === 'pokemon' &&
-                    result?.[0] === 'type'
-                ) {
+                if (mode && result?.[0] === 'type') {
                     const typeName = this.capitalizeFirst
                     ? this.capitalizeFirst(result[1])
                     : String(result[1]).charAt(0).toUpperCase() +
                           String(result[1]).slice(1);
 
-                    return mode === 'weak'
-                        ? `Weak ${typeName}`
-                    : `Resists ${typeName}`;
+                    const label = mode === 'weak' ? 'Weak' : 'Resists';
+                    return this.__qolNegateMode
+                        ? `Not ${label} ${typeName}`
+                        : `${label} ${typeName}`;
+                }
+
+                // Plain type/ability/move suggestion while typing a
+                // "!<query>" search (not the weak/resists sub-mode).
+                if (
+                    !mode &&
+                    this.__qolNegateMode &&
+                    (result?.[0] === 'type' || result?.[0] === 'ability' || result?.[0] === 'move')
+                ) {
+                    return '!' + original.call(this, result);
                 }
 
                 return original.call(this, result);
@@ -1233,22 +1370,60 @@
                     attrs
                 );
 
-                const mode = this.engine?.__qolEffectivenessMode;
-
-                if (
-                    !mode ||
-                    this.engine?.typedSearch?.searchType !== 'pokemon' ||
-                    type !== 'type'
-                ) {
+                if (this.engine?.typedSearch?.searchType !== 'pokemon') {
                     return html;
                 }
 
-                const prefix = mode === 'weak' ? 'Weak' : 'Resists';
+                const mode = this.engine?.__qolEffectivenessMode;
 
-                return html.replace(
-                    /(<span class="col namecol"><b>)([^<]+)(<\/b>)/,
-                    `$1${prefix} $2$3`
-                );
+                if (mode && type === 'type') {
+                    const label = mode === 'weak' ? 'Weak' : 'Resists';
+                    const prefix = this.engine?.__qolNegateMode
+                    ? `!${label}`
+                    : label;
+
+                    return html.replace(
+                        /(<span class="col namecol"><b>)([^<]+)(<\/b>)/,
+                        `$1${prefix} $2$3`
+                    );
+                }
+
+                // Plain type/ability/move row while typing a !<query> search.
+                // Plain type/ability/move row while typing a !<query> search.
+                if (
+                    !mode &&
+                    this.engine?.__qolNegateMode &&
+                    (type === 'type' || type === 'ability' || type === 'move')
+                ) {
+                    const nameColumn = type === 'move'
+                    ? 'movenamecol'
+                    : 'namecol';
+
+                    const pattern = new RegExp(
+                        `(<span class="col ${nameColumn}">)`
+                    );
+
+                    return html.replace(
+                        pattern,
+                        (match, openingTag, offset, fullHtml) => {
+                            // Avoid adding a second ! if this row was already prefixed.
+                            const contentAfterTag = fullHtml.slice(
+                                offset + openingTag.length
+                            );
+
+                            if (
+                                contentAfterTag.startsWith('!') ||
+                                contentAfterTag.startsWith('<b>!</b>')
+                            ) {
+                                return openingTag;
+                            }
+
+                            return `${openingTag}!`;
+                        }
+                    );
+                }
+
+                return html;
             }
         );
     }
