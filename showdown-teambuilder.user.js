@@ -10,16 +10,7 @@
 // @updateURL    https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // ==/UserScript==
-//
-// Adds Teambuilder QOL for four "Other Metagame" stat-changing formats:
-//   - Tier Shift        (gen9tiershift / gen9tiershiftaaa)
-//   - Mix and Mega       (gen9mixandmega)
-//   - Godly Gift         (gen9godlygift)
-//   - Bad 'n Boosted     (gen9badnboosted)
-//
-// The script works by patching a handful of Showdown client methods so that,
-// whenever they ask the dex for a Pokémon's species, they transparently get
-// back a version whose baseStats already reflect the active format's rules.
+
 
 (function () {
     'use strict';
