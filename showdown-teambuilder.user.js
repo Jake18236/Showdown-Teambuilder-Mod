@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      2.0
+// @version      2.1
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -16,6 +16,9 @@
     'use strict';
 
     const LOG = '[Teambuilder QOL]';
+
+    let pendingSilentTSARequest = false;
+    let pendingSilentGGRequest = false;
 
     // ============================================================
     // CONSTANTS
@@ -112,6 +115,7 @@
         if (!window.app || typeof app.send !== 'function') return;
 
         tsaBanlistRequestSent = true;
+        pendingSilentTSARequest = true;
         app.send('/tier tiershiftaaa');
     }
 
@@ -120,6 +124,7 @@
         if (!window.app || typeof app.send !== 'function') return;
 
         godlyGiftRequestSent = true;
+        pendingSilentGGRequest = true;
         app.send('/tier godly gift');
     }
 
@@ -426,7 +431,7 @@
         let note = chart.find('.mnm-speed-note');
         if (!note.length) {
             note = $(
-                '<div class="mnm-speed-note" style="position:absolute;left:300px;top:300px;z-index:10;">' +
+                '<div class="mnm-speed-note" style="position:absolute;left:300px;top:350px;z-index:10;">' +
                 'Note: Speed is <span class="mnm-speed-value">0</span> before Mega Evolving</div>'
             );
             chart.find('.basestatscol').after(note);
@@ -585,7 +590,189 @@
     // ------------------------------------------------------------
 
     const ALLOWED_POKEMON_FILTER_TYPES =
-          ['type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists'];
+          ['type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists',
+           'natdex', 'fe', 'recovery', 'pivot', 'priority'];
+
+    // ------------------------------------------------------------
+    // Custom boolean/toggle filters: "natdex", "fe", "recovery",
+    // "pivot", "priority". Unlike weak/resists these don't take a
+    // target argument — typing the keyword and picking the single
+    // suggestion just adds/removes the chip. Each maps to a display
+    // label used both for the filter chip text and (via a swapped-in
+    // "ability" row, since ability rows render as plain text with no
+    // icon lookup) the search-suggestion row.
+    //
+    // IMPORTANT: the suggestion-row id for each of these MUST be
+    // namespaced (CUSTOM_TOGGLE_PREFIX) rather than the bare key.
+    // "natdex" in particular collides with a real Showdown dex/tier
+    // id (the actual "[Gen 9] National Dex" tier/format), so an
+    // un-namespaced row gets resolved by native code to that real
+    // entry instead of our placeholder — which is why adding it (or
+    // negating it) silently turned into a broken, always-empty
+    // "tier: [Gen 9] National Dex" filter instead of our toggle.
+    // ------------------------------------------------------------
+
+    const CUSTOM_TOGGLE_FILTERS = {
+        natdex: 'National Dex',
+        fe: 'Fully Evolved',
+        recovery: 'Recovery',
+        pivot: 'Pivot',
+        priority: 'Priority',
+    };
+
+    const CUSTOM_TOGGLE_PREFIX = 'Is ';
+
+    function isFullyEvolved(species) {
+        if (!species) return false;
+        return !species.evos || species.evos.length === 0;
+    }
+
+    // Per-dex cache of move IDs qualifying for each move-based custom
+    // filter, so we don't re-scan the whole movedex per search row.
+    const customToggleMoveIdCache = new WeakMap();
+
+    function computeCustomToggleMoveIds(dex, kind) {
+        const all = typeof dex?.moves?.all === 'function'
+        ? dex.moves.all()
+        : Object.values(window.BattleMovedex || {});
+
+        switch (kind) {
+            case 'recovery': {
+                // Same recovery category used by Showdown's /ds implementation.
+                // Life Dew is intentionally excluded for this userscript.
+                const recoveryMoves = [
+                    'healorder',
+                    'junglehealing',
+                    'milkdrink',
+                    'moonlight',
+                    'morningsun',
+                    'recover',
+                    'roost',
+                    'shoreup',
+                    'slackoff',
+                    'softboiled',
+                    'strengthsap',
+                    'synthesis',
+                    'wish',
+                ];
+
+                return recoveryMoves.filter((id) => {
+                    const move = dex.moves.get(id);
+                    return move?.exists;
+                });
+            }
+
+            case 'pivot': {
+                const pivotMoves = [
+                    'uturn',
+                    'voltswitch',
+                    'flipturn',
+                    'partingshot',
+                    'chillyreception',
+                    'teleport',
+                    'shedtail',
+                ];
+
+                return pivotMoves.filter((id) => {
+                    const move = dex.moves.get(id);
+                    return move?.exists;
+                });
+            }
+
+            case 'priority':
+                return all
+                    .filter((move) =>
+                            move?.exists &&
+                            move.category !== 'Status' &&
+                            move.id !== 'bide' &&
+                            move.priority > 0
+                           )
+                    .map((move) => move.id);
+
+            default:
+                return [];
+        }
+    }
+
+    function getCustomToggleMoveIds(dex, kind) {
+        if (!dex) return [];
+
+        let byKind = customToggleMoveIdCache.get(dex);
+        if (!byKind) {
+            byKind = {};
+            customToggleMoveIdCache.set(dex, byKind);
+        }
+
+        if (!byKind[kind]) {
+            byKind[kind] = computeCustomToggleMoveIds(dex, kind);
+        }
+
+        return byKind[kind];
+    }
+
+    // `ctx` is the BattlePokemonSearch instance (`this` inside filter()),
+    // `original` is native filter()'s un-patched implementation, so a
+    // move-based toggle can be tested by reusing native 'move' filtering
+    // logic for each qualifying move id.
+    function pokemonMatchesCustomToggle(ctx, original, row, species, kind) {
+        switch (kind) {
+            case 'fe':
+                return isFullyEvolved(species);
+
+            case 'recovery':
+            case 'pivot':
+            case 'priority': {
+                const moveIds = getCustomToggleMoveIds(ctx.dex, kind);
+                return moveIds.some((moveId) =>
+                    original.call(ctx, row, [['move', moveId]])
+                );
+            }
+
+            default:
+                return true;
+        }
+    }
+
+    // A native suggestion row whose id (once run through toSearchId, the
+    // same normalization used for our own keys) matches one of our
+    // reserved keywords. "natdex" specifically collides with a real
+    // Showdown tier/format id, so its own suggestions must be filtered
+    // out of the native results — otherwise the user can end up
+    // selecting the real (useless-here) entry instead of our toggle.
+    function isReservedToggleCollisionRow(row) {
+        if (!row) return false;
+        const id = toSearchId(row[1]);
+        return Object.prototype.hasOwnProperty.call(CUSTOM_TOGGLE_FILTERS, id);
+    }
+
+    // Suggestion rows for the custom toggle filters that (loosely)
+    // prefix-match the given query. Reuses the 'ability' row type so
+    // native renderRow/getResultName produce a normal plain-text row;
+    // the actual displayed text is swapped to our label afterward (see
+    // patchEffectivenessResultNames / patchEffectivenessTypeName). The
+    // id itself is namespaced so it can never collide with a real
+    // ability/tier/format id.
+    function customToggleSuggestions(query) {
+        const q = toSearchId(query);
+        const rows = [];
+
+        for (const [key, label] of Object.entries(CUSTOM_TOGGLE_FILTERS)) {
+            if (
+                !q ||
+                toSearchId(key).startsWith(q) ||
+                toSearchId(label).startsWith(q)
+            ) {
+                rows.push([
+                    'ability',
+                    CUSTOM_TOGGLE_PREFIX + key,
+                    0,
+                    Math.min(String(query || '').length, label.length),
+                ]);
+            }
+        }
+
+        return rows;
+    }
 
     function isNegatedFilterType(type) {
         return typeof type === 'string' && type.charCodeAt(0) === 33;// '!'
@@ -616,6 +803,9 @@
             const tierTable = {uber: 'Uber', caplc: 'CAP LC', capnfe: 'CAP NFE'};
             const id = toID(value);
             return tierTable[id] || id.toUpperCase();
+        }
+        if (CUSTOM_TOGGLE_FILTERS[type]) {
+            return CUSTOM_TOGGLE_FILTERS[type];
         }
         return value;
     }
@@ -842,39 +1032,62 @@
     // ============================================================
 
     function patchServerReceive() {
-        return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
-                           function (data) {
+    return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
+        function (data) {
+            let payload = data;
+
             try {
                 if (typeof data === 'string' && data.includes('/raw ')) {
-                    const match = data.match(/\|\/raw (.*)/);
+                    const lines = data.split('\n');
+                    let modified = false;
 
-                    let isBanlistResponse = false;
+                    const filteredLines = lines.filter((line) => {
+                        if (!line.includes('/raw ')) return true;
 
-                    if (match && data.includes('[Gen 9] Tier Shift AAA')) {
-                        parseTSABanlist(match[1]);
-                        isBanlistResponse = true;
-                    }
+                        const match = line.match(/\/raw (.*)/s);
+                        if (!match) return true;
 
-                    if (match && data.includes('[Gen 9] Godly Gift')) {
-                        parseGodlyGiftRestricted(match[1]);
-                        isBanlistResponse = true;
-                    }
+                        let suppress = false;
 
-                    // The banlist has been parsed and saved.
-                    // Prevent the raw response from being displayed.
-                    if (isBanlistResponse) {
-                        return;
+                        if (line.includes('[Gen 9] Tier Shift AAA')) {
+                            parseTSABanlist(match[1]);
+                            if (pendingSilentTSARequest) {
+                                pendingSilentTSARequest = false;
+                                suppress = true;
+                            }
+                        }
+
+                        if (line.includes('[Gen 9] Godly Gift')) {
+                            parseGodlyGiftRestricted(match[1]);
+                            if (pendingSilentGGRequest) {
+                                pendingSilentGGRequest = false;
+                                suppress = true;
+                            }
+                        }
+
+                        if (suppress) {
+                            modified = true;
+                            return false;
+                        }
+
+                        return true;
+                    });
+
+                    if (modified) {
+                        payload = filteredLines.join('\n');
                     }
                 }
             } catch (e) {
                 console.error(LOG, 'Failed to parse server data:', e);
+                payload = data;
             }
 
-            // Allow all other server messages to work normally.
-            return original.apply(this, arguments);
+            if (payload === '') return;
+
+            return original.call(this, payload);
         }
-                          );
-    }
+    );
+}
 
     // ============================================================
     // PATCH: Pokémon search legality (Tier Shift AAA banlist)
@@ -954,6 +1167,89 @@
     }
 
     // ============================================================
+    // PATCH: Pokémon search legality (natdex filter)
+    // ============================================================
+
+    // When the "natdex" chip is active, widen the base pool the same
+    // way patchTsaSearchLegality does to get an unrestricted starting
+    // point (this.format = 'gen9') before the format's own legality
+    // (and any other active mod's) is applied on top. This reuses
+    // exactly the mechanism that's already proven to work for Tier
+    // Shift AAA in this file, rather than guessing at undocumented
+    // properties (formatType/baseResults/etc.) that may not exist on
+    // the real search instance. The chip itself is left in `filters`;
+    // it's never used to reject a row (see patchEffectivenessSearchFilters).
+    function patchNatdexSearchLegality() {
+    const search = getTeambuilderRoom()?.search?.engine?.typedSearch;
+    const proto = findPrototypeWithMethod(search, 'getResults');
+
+    return patchMethod(
+        proto,
+        'getResults',
+        '__qolNatdexPatched',
+        (original) =>
+            function (filters, sortCol, reverseSort) {
+                const hasNatdex =
+                    this.searchType === 'pokemon' &&
+                    Array.isArray(filters) &&
+                    filters.some(
+                        ([rawType]) =>
+                            baseFilterType(rawType) === 'natdex'
+                    );
+
+                if (!hasNatdex) {
+                    return original.call(
+                        this,
+                        filters,
+                        sortCol,
+                        reverseSort
+                    );
+                }
+
+                const savedFormat = this.format;
+
+                // Throw away the current cached legality pool.
+                this.baseResults = null;
+                this.baseIllegalResults = null;
+                this.illegalReasons = null;
+
+                // Make Showdown calculate legality using a format where
+                // everything we care about is legal.
+                this.format = 'gen9purehackmons';
+
+                try {
+                    const result = original.call(
+                        this,
+                        filters,
+                        sortCol,
+                        reverseSort
+                    );
+
+                    return result
+                        .filter(row => row[0] !== 'header')
+                        .map(row => {
+                            if (row[0] !== 'pokemon') return row;
+
+                            const cleanRow = row.slice();
+                            cleanRow[4] = undefined;
+
+                            return cleanRow;
+                        });
+
+                } finally {
+                    this.format = savedFormat;
+
+                    // DO NOT restore the Pure Hackmons cache.
+                    // Force the next normal search to rebuild.
+                    this.baseResults = null;
+                    this.baseIllegalResults = null;
+                    this.illegalReasons = null;
+                }
+            }
+    );
+}
+
+    // ============================================================
     // PATCH: Pokemon search filters (resists / weak)
     // ============================================================
 
@@ -983,9 +1279,22 @@
                 const negated = isNegatedFilterType(rawType);
                 const type = negated ? baseFilterType(rawType) : rawType;
 
-                const matches = (type === 'weak' || type === 'resists')
-                    ? pokemonMatchesEffectiveness(this.dex, species, type, target)
-                    : original.call(this, row, [[type, target]]);
+                // "natdex" only widens the base pool (see
+                // patchNatdexSearchLegality) — it never rejects a row
+                // here, negated or not, since "not national dex" has
+                // no sensible per-species meaning.
+                if (type === 'natdex') {
+                    continue;
+                }
+
+                let matches;
+                if (type === 'weak' || type === 'resists') {
+                    matches = pokemonMatchesEffectiveness(this.dex, species, type, target);
+                } else if (CUSTOM_TOGGLE_FILTERS[type]) {
+                    matches = pokemonMatchesCustomToggle(this, original, row, species, type);
+                } else {
+                    matches = original.call(this, row, [[type, target]]);
+                }
 
                 if (negated ? matches : !matches) {
                     return false;
@@ -1101,6 +1410,31 @@
                     return original.call(this, entry);
                 }
 
+                // A custom toggle suggestion (natdex/fe/recovery/pivot/
+                // priority) was picked — its row id is our namespaced
+                // pseudo-ability id, never a real ability/tier/format id.
+                const rawValue = entry?.[1];
+
+                if (
+                    typeof rawValue === 'string' &&
+                    rawValue.startsWith(CUSTOM_TOGGLE_PREFIX)
+                ) {
+                    const key = rawValue.slice(CUSTOM_TOGGLE_PREFIX.length);
+
+                    if (CUSTOM_TOGGLE_FILTERS[key]) {
+                        const negated =
+                              isNegatedFilterType(entry[0]) ||
+                              this.__qolNegateMode;
+
+                        return addPokemonSearchFilter(
+                            this,
+                            key,
+                            CUSTOM_TOGGLE_FILTERS[key],
+                            negated
+                        );
+                    }
+                }
+
                 // A type was selected from our "Weak to" / "Resists to"
                 // menu (possibly while typing a negated "!weak ..." query).
                 if (this.__qolEffectivenessMode && entry?.[0] === 'type') {
@@ -1123,8 +1457,10 @@
                     return addPokemonSearchFilter(this, type, entry[1], true);
                 }
 
-                // Directly supplied positive custom filters.
-                if (rawType === 'weak' || rawType === 'resists') {
+                // Directly supplied positive custom filters (e.g. from
+                // the debug console API, using the real type name rather
+                // than a suggestion row).
+                if (rawType === 'weak' || rawType === 'resists' || CUSTOM_TOGGLE_FILTERS[rawType]) {
                     return addPokemonSearchFilter(this, rawType, entry[1], false);
                 }
 
@@ -1162,18 +1498,38 @@
 
                     if (!negated) {
                         this.__qolNegateMode = false;
-                        return original.call(this, query);
+
+                        // Strip any native suggestion that collides with
+                        // one of our reserved keywords (e.g. the real
+                        // "[Gen 9] National Dex" tier/format entry for
+                        // "natdex") before merging in our own toggle
+                        // suggestions — otherwise the real entry can get
+                        // auto-selected instead of ours.
+                        const native = (original.call(this, query) || [])
+                            .filter((row) => !isReservedToggleCollisionRow(row));
+                        const custom = customToggleSuggestions(rawQuery);
+
+                        if (!custom.length) return native;
+
+                        // Our suggestions go first so they're the
+                        // default (Enter-key) selection.
+                        const merged = custom.concat(native);
+                        this.results = merged;
+                        return merged;
                     }
 
                     this.__qolNegateMode = true;
 
-                    // Bare "!": start with every type, same as typing
-                    // "weak"/"resists" alone lists every type. Abilities
-                    // and moves only show up once you start typing
-                    // their name — there are too many to list at once.
+                    // Bare "!": start with every type (same as typing
+                    // "weak"/"resists" alone lists every type) plus every
+                    // custom toggle. Abilities and moves only show up once
+                    // you start typing their name — there are too many to
+                    // list at once.
                     if (!q) {
                         const typeChart = window.BattleTypeChart;
                         const results = [['header', 'Not']];
+
+                        results.push(...customToggleSuggestions(''));
 
                         if (typeChart) {
                             for (const typeName of Object.keys(typeChart)) {
@@ -1192,23 +1548,33 @@
                         return results;
                     }
 
-                    // "!<type/ability/move>": reuse Showdown's own
+                    // "!<type/ability/move/tier>": reuse Showdown's own
                     // suggestion matching for the text after the "!",
-                    // keeping only type/ability/move rows. No Pokémon
-                    // (there's no supported way to exclude one named
-                    // Pokémon here, only a filter criterion) and no
-                    // egg group/tier (not something this negates).
+                    // keeping only type/ability/move/tier rows (no
+                    // Pokémon — there's no supported way to exclude one
+                    // named Pokémon here, only a filter criterion — and
+                    // no egg group). Any row that collides with one of
+                    // our reserved keywords (e.g. the real "natdex" tier)
+                    // is dropped, and our own toggle suggestions are
+                    // placed first.
                     const suggestions = (original.call(this, q) || []).filter(
-                        ([rowType]) =>
-                            rowType === 'type' ||
-                            rowType === 'ability' ||
-                            rowType === 'move'
+                        ([rowType, rowId]) =>
+                            (rowType === 'type' ||
+                             rowType === 'ability' ||
+                             rowType === 'move' ||
+                             rowType === 'tier') &&
+                            !Object.prototype.hasOwnProperty.call(
+                                CUSTOM_TOGGLE_FILTERS,
+                                toSearchId(rowId)
+                            )
                     );
 
-                    this.results = suggestions;
+                    const merged = customToggleSuggestions(q).concat(suggestions);
+
+                    this.results = merged;
                     this.exactMatch = true;
 
-                    return suggestions;
+                    return merged;
                 }
 
                 const mode = match[1];
@@ -1312,6 +1678,21 @@
                     return original.call(this, result);
                 }
 
+                // A custom toggle suggestion row (natdex/fe/recovery/
+                // pivot/priority) — always show our own label, never
+                // whatever a real ability/tier lookup would resolve to.
+                if (
+                    typeof result?.[1] === 'string' &&
+                    result[1].startsWith(CUSTOM_TOGGLE_PREFIX)
+                ) {
+                    const key = result[1].slice(CUSTOM_TOGGLE_PREFIX.length);
+                    const label = CUSTOM_TOGGLE_FILTERS[key];
+
+                    if (label) {
+                        return this.__qolNegateMode ? `Not ${label}` : label;
+                    }
+                }
+
                 const mode = this.__qolEffectivenessMode;
 
                 if (mode && result?.[0] === 'type') {
@@ -1326,12 +1707,13 @@
                         : `${label} ${typeName}`;
                 }
 
-                // Plain type/ability/move suggestion while typing a
+                // Plain type/ability/move/tier suggestion while typing a
                 // "!<query>" search (not the weak/resists sub-mode).
                 if (
                     !mode &&
                     this.__qolNegateMode &&
-                    (result?.[0] === 'type' || result?.[0] === 'ability' || result?.[0] === 'move')
+                    (result?.[0] === 'type' || result?.[0] === 'ability' ||
+                     result?.[0] === 'move' || result?.[0] === 'tier')
                 ) {
                     return '!' + original.call(this, result);
                 }
@@ -1351,6 +1733,46 @@
             '__qolEffectivenessTypeNamePatched',
             (original) =>
             function (row, type, matchStart, matchEnd, errorMessage, attrs) {
+                // Custom toggle row (natdex/fe/recovery/pivot/priority):
+                // build a minimal plain-text row ourselves instead of
+                // calling the native "ability" renderer, since the
+                // namespaced pseudo-id (e.g. "__qol_natdex") would
+                // otherwise get looked up as a real (nonexistent, or
+                // worse, colliding) ability.
+                if (
+                    type === 'ability' &&
+                    typeof row?.[1] === 'string' &&
+                    row[1].startsWith(CUSTOM_TOGGLE_PREFIX)
+                ) {
+                    const key = row[1].slice(CUSTOM_TOGGLE_PREFIX.length);
+                    const label = CUSTOM_TOGGLE_FILTERS[key];
+
+                    if (label) {
+                        // Render via a real, harmless ability id first so
+                        // we inherit the native wrapper markup/classes,
+                        // then swap the visible name for our label.
+                        const placeholderRow = ['ability', 'noability'];
+                        const placeholderHtml = original.call(
+                            this,
+                            placeholderRow,
+                            'ability',
+                            matchStart,
+                            matchEnd,
+                            errorMessage,
+                            attrs
+                        );
+
+                        const displayText = this.engine?.__qolNegateMode
+                            ? `Not ${label}`
+                            : label;
+
+                        return placeholderHtml.replace(
+                            /(<span class="col namecol"><b>)([^<]*)(<\/b>)/,
+                            `$1${displayText}$3`
+                        );
+                    }
+                }
+
                 const html = original.call(
                     this,
                     row,
@@ -1379,12 +1801,12 @@
                     );
                 }
 
-                // Plain type/ability/move row while typing a !<query> search.
-                // Plain type/ability/move row while typing a !<query> search.
+                // Plain type/ability/move/tier row while typing a
+                // !<query> search.
                 if (
                     !mode &&
                     this.engine?.__qolNegateMode &&
-                    (type === 'type' || type === 'ability' || type === 'move')
+                    (type === 'type' || type === 'ability' || type === 'move' || type === 'tier')
                 ) {
                     const nameColumn = type === 'move'
                     ? 'movenamecol'
@@ -1479,15 +1901,48 @@
                            function (pokemon, matchStart, matchLength, errorMessage, attrs) {
             const mod = getActiveMod();
 
+            const typedSearch = this.engine?.typedSearch;
+            const filters = typedSearch?.filters ?? [];
+
+            const isNatdex = filters.some(filter =>
+                                          Array.isArray(filter) && filter[0] === 'natdex'
+                                         );
+
+            // Natdex: suppress the legality label.
+            if (isNatdex) {
+                return original.call(
+                    this,
+                    pokemon,
+                    matchStart,
+                    matchLength,
+                    undefined,
+                    attrs
+                );
+            }
+
             if (!pokemon || (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED)) {
-                return original.call(this, pokemon, matchStart, matchLength, errorMessage, attrs);
+                return original.call(
+                    this,
+                    pokemon,
+                    matchStart,
+                    matchLength,
+                    errorMessage,
+                    attrs
+                );
             }
 
             const shifted = Object.assign({}, pokemon, {
                 baseStats: searchListStats(pokemon, mod),
             });
 
-            return original.call(this, shifted, matchStart, matchLength, errorMessage, attrs);
+            return original.call(
+                this,
+                shifted,
+                matchStart,
+                matchLength,
+                errorMessage,
+                attrs
+            );
         }
                           );
     }
@@ -1696,6 +2151,7 @@
         return patchedAny;
     }
 
+    patchTooltipSpeedRange()
     // ============================================================
     // PATCH EVERYTHING
     // ============================================================
@@ -1708,6 +2164,7 @@
             patchEffectivenessSearchBar(),
 
             patchGodlyGiftSearchLegality(),
+            patchNatdexSearchLegality(),
             patchEffectivenessTextSearch(),
             patchEffectivenessAddFilter(),
             patchEffectivenessResultNames(),
@@ -1789,9 +2246,10 @@
         requestTSABanlist,
         requestGGBanlist,
         patchBattleStatGuesser: patchBattleStatGuesserGetStat,
-        parseEffectivenessSearch: (query) => parseEffectivenessSearch(query, window.room?.curTeam?.dex || Dex),
         pokemonMatchesEffectiveness,
         getBadNBoostedBaseStats: (set, room) => badNBoostedBaseStats(room?.curTeam?.dex, set),
+        isFullyEvolved,
+        getCustomToggleMoveIds: (kind, dex) => getCustomToggleMoveIds(dex || window.room?.curTeam?.dex, kind),
         patch: patchEverything,
     };
 })();
