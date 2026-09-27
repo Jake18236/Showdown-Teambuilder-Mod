@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      2.1
+// @version      2.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -319,13 +319,98 @@
 
     // Figures out which forme an item turns a Pokémon into, and which
     // (non-mega) species that forme's stat changes are measured against.
+
+    // ------------------------------------------------------------
+    // Special Mix and Mega items
+    //
+    // These don't behave like ordinary Mega Stones in the dex:
+    // - Blue Orb -> Primal Kyogre
+    // - Red Orb -> Primal Groudon
+    // - Arceus Plates -> Arceus forme with that plate's type
+    //
+    // Keep these explicit because relying on itemUser/megaStone is
+    // not reliable for these items.
+    // ------------------------------------------------------------
+
+    const MNM_ARCEUS_PLATE_TYPES = {
+        flameplate: 'Fire',
+        splashplate: 'Water',
+        zapplate: 'Electric',
+        meadowplate: 'Grass',
+        icicleplate: 'Ice',
+        fistplate: 'Fighting',
+        toxicplate: 'Poison',
+        earthplate: 'Ground',
+        skyplate: 'Flying',
+        mindplate: 'Psychic',
+        insectplate: 'Bug',
+        stoneplate: 'Rock',
+        spookyplate: 'Ghost',
+        dracoplate: 'Dragon',
+        dreadplate: 'Dark',
+        ironplate: 'Steel',
+        pixieplate: 'Fairy',
+    };
+
+    function resolveSpecialMixAndMegaForme(dex, item) {
+        if (!item?.id) return null;
+
+        // Primal Kyogre
+        if (item.id === 'blueorb') {
+            const formeSpecies = dex.species.get('Kyogre-Primal');
+            const baseSpecies = dex.species.get('Kyogre');
+
+            if (formeSpecies?.exists && baseSpecies?.exists) {
+                return {formeSpecies, baseSpecies};
+            }
+        }
+
+        // Primal Groudon
+        if (item.id === 'redorb') {
+            const formeSpecies = dex.species.get('Groudon-Primal');
+            const baseSpecies = dex.species.get('Groudon');
+
+            if (formeSpecies?.exists && baseSpecies?.exists) {
+                return {formeSpecies, baseSpecies};
+            }
+        }
+
+        // Arceus Plates
+        const plateType = MNM_ARCEUS_PLATE_TYPES[item.id];
+
+        if (plateType) {
+            const formeSpecies = dex.species.get(`Arceus-${plateType}`);
+            const baseSpecies = dex.species.get('Arceus');
+
+            if (formeSpecies?.exists && baseSpecies?.exists) {
+                return {formeSpecies, baseSpecies};
+            }
+        }
+
+        return null;
+    }
+
     function resolveMegaForme(dex, item) {
         if (!item?.exists) return null;
 
-        let formeName = item.megaStone ? Object.values(item.megaStone)[0] : null;
+        // --------------------------------------------------------
+        // Special Mix and Mega items
+        // --------------------------------------------------------
+        const specialForme = resolveSpecialMixAndMegaForme(dex, item);
 
-        // Non-Mega-Stone Mix and Mega items (Blue Orb, Lustrous Globe, etc.)
-        // identify their forme through itemUser instead.
+        if (specialForme) {
+            return specialForme;
+        }
+
+        // --------------------------------------------------------
+        // Normal Mega Stones
+        // --------------------------------------------------------
+        let formeName = item.megaStone
+        ? Object.values(item.megaStone)[0]
+        : null;
+
+        // Other non-Mega-Stone Mix and Mega items that identify
+        // their forme through itemUser.
         if (!formeName && item.itemUser?.length) {
             formeName = item.itemUser[0];
         }
@@ -338,12 +423,13 @@
         let baseSpecies = formeSpecies;
 
         if (formeSpecies.name === 'Zygarde-Mega') {
-            // Mix and Mega treats Zygarde-Complete as the "base" forme.
+            // Mix and Mega treats Zygarde-Complete as the base forme.
             baseSpecies = dex.species.get('Zygarde-Complete');
         } else if (formeSpecies.isMega && formeSpecies.battleOnly) {
             const battleOnly = Array.isArray(formeSpecies.battleOnly)
             ? formeSpecies.battleOnly[0]
             : formeSpecies.battleOnly;
+
             baseSpecies = dex.species.get(battleOnly);
         } else if (formeSpecies.baseSpecies) {
             baseSpecies = dex.species.get(formeSpecies.baseSpecies);
@@ -351,7 +437,7 @@
 
         if (!baseSpecies?.exists) return null;
 
-        return {formeSpecies, baseSpecies };
+        return {formeSpecies, baseSpecies};
     }
 
     function mixAndMegaStatDelta(dex, item, stat) {
@@ -378,6 +464,103 @@
         }
 
         return stats;
+    }
+
+    // ------------------------------------------------------------
+    // Type / ability preview
+    //
+    // Ports the exact logic Showdown's sim uses server-side for this
+    // format (data/mods/mixandmega/scripts.ts: getFormeChangeDeltas /
+    // mutateOriginalSpecies) so the teambuilder can show the same
+    // result the battle would actually produce, without needing to
+    // touch the set's real (base) species or ability.
+    //
+    // Ability: Mix and Mega always replaces the holder's ability with
+    // the forme's ability the moment it Mega Evolves - but the set's
+    // own `ability` field still matters as the *starting* ability (the
+    // turn(s) before Mega Evolving), so it's never overwritten; we only
+    // show a "Will be X after Mega Evolving" preview, exactly like
+    // native Mega-forme dex entries already do.
+    //
+    // Type: unlike ability, a type change is unconditional and has no
+    // "before Mega Evolving" state worth preserving in the teambuilder
+    // (the pre-evolution type is just whatever the base species already
+    // shows), so this is applied directly to the displayed type icons.
+    // ------------------------------------------------------------
+
+    function mixAndMegaFutureAbility(dex, set) {
+        if (!set?.species || !set?.item || !dex) return null;
+
+        const item = dex.items.get(set.item);
+        if (!item?.exists) return null;
+
+        const forme = resolveMegaForme(dex, item);
+        return forme?.formeSpecies.abilities['0'] || null;
+    }
+
+    // Mirrors getFormeChangeDeltas()'s `type`/`formeType` computation.
+    // `formeType === 'Primary'` is the only variant that changes how the
+    // delta gets applied (see mixAndMegaModifiedTypes below); the sim's
+    // other formeType values ('Mega'/'Primal'/'Crowned') only matter for
+    // actually simulating the battle, not for what type is displayed.
+    function mixAndMegaTypeDelta(baseSpecies, formeSpecies) {
+        let type = null;
+        let formeType = null;
+
+        if (baseSpecies.name === 'Arceus' || baseSpecies.name === 'Silvally') {
+            // Plates/Memories: the forme's primary type replaces the
+            // holder's primary type outright, and any secondary type
+            // the holder already has is kept.
+            type = formeSpecies.types[0];
+            formeType = 'Primary';
+        } else if (formeSpecies.types.length > baseSpecies.types.length) {
+            // Mono -> dual (e.g. Sceptilite): gain the new secondary type.
+            type = formeSpecies.types[1];
+        } else if (formeSpecies.types.length < baseSpecies.types.length) {
+            // Dual -> mono (e.g. Aggronite): the holder gains the mega's
+            // own (base) primary type as its new secondary type, unless
+            // it already has that type (see the `types[0] === type` case
+            // in mixAndMegaModifiedTypes, which then drops to mono).
+            type = baseSpecies.types[0];
+        } else if (formeSpecies.types[1] !== baseSpecies.types[1]) {
+            // Same type count, different secondary (e.g. Altarianite).
+            type = formeSpecies.types[1];
+        } else if (formeSpecies.types[0] !== baseSpecies.types[0]) {
+            // Same type count, different primary (rare).
+            type = formeSpecies.types[0];
+            formeType = 'Primary';
+        }
+
+        return {type, formeType };
+    }
+
+    // Applies the delta above onto the holder's own types, the same way
+    // the sim's mutateOriginalSpecies() does. Returns null if there's no
+    // resolvable forme (no mega-stone-like item equipped) at all, so
+    // callers can fall back to the holder's own unmodified types.
+    function mixAndMegaModifiedTypes(dex, set) {
+        if (!set?.species || !set?.item || !dex) return null;
+
+        const species = dex.species.get(set.species);
+        const item = dex.items.get(set.item);
+        if (!species?.exists || !item?.exists) return null;
+
+        const forme = resolveMegaForme(dex, item);
+        if (!forme) return null;
+
+        const delta = mixAndMegaTypeDelta(forme.baseSpecies, forme.formeSpecies);
+        const types = species.types.slice();
+
+        if (delta.formeType === 'Primary') {
+            const secondType = types[1];
+            const result = [delta.type];
+            if (secondType && secondType !== delta.type) result.push(secondType);
+            return result;
+        }
+
+        if (!delta.type) return types;
+        if (types[0] === delta.type) return [types[0]];
+        return [types[0], delta.type];
     }
 
     // Pre-Mega speed, shown as a note under the base stat column, using
@@ -2075,6 +2258,98 @@
     }
 
     // ============================================================
+    // PATCH: type icons + ability preview (Mix and Mega)
+    // ============================================================
+
+    // Type icons shown in the Details pane (renderSet) come straight
+    // from the *named* species' own types, with no awareness of any
+    // item at all. Post-process the HTML it returns so Mix and Mega
+    // shows the post-Mega-Evolution types instead — this also covers
+    // switching to/from this Pokémon and page load, when the item is
+    // already set.
+    function patchRenderSetTypeIcons() {
+        const proto = window.TeambuilderRoom?.prototype;
+
+        return patchMethod(proto, 'renderSet', '__qolMixAndMegaPatched', (original) =>
+                           function (set, i) {
+            const html = original.call(this, set, i);
+
+            if (getActiveMod(this) !== MOD.MIX_AND_MEGA || !set?.species) {
+                return html;
+            }
+
+            const dex = this.curTeam?.dex;
+            const types = mixAndMegaModifiedTypes(dex, set);
+            if (!types) return html;
+
+            const icons = types.map((type) => Dex.getTypeIcon(type)).join('');
+
+            return html.replace(
+                /(<div class="setcell setcell-typeicons">)[\s\S]*?(<\/div>)/,
+                `$1${icons}$2`
+            );
+        }
+                          );
+    }
+
+    // Live-updates just the type icon cell when the item field itself
+    // changes, without waiting for a full re-render (chartSet's own
+    // 'item' case only refreshes the sprite/item icon).
+    function patchChartSetMixAndMegaTypes() {
+        const proto = window.TeambuilderRoom?.prototype;
+
+        return patchMethod(proto, 'chartSet', '__qolMixAndMegaPatched', (original) =>
+                           function (val, selectNext) {
+            const inputName = this.curChartName;
+            const result = original.call(this, val, selectNext);
+
+            if (inputName !== 'item' || getActiveMod(this) !== MOD.MIX_AND_MEGA) {
+                return result;
+            }
+
+            const dex = this.curTeam?.dex;
+            const set = this.curSet;
+            if (!dex || !set?.species) return result;
+
+            const cell = this.$('.setcell-typeicons');
+            if (!cell.length) return result;
+
+            const species = dex.species.get(set.species);
+            const types = mixAndMegaModifiedTypes(dex, set) || species?.types || [];
+
+            cell.html(types.map((type) => Dex.getTypeIcon(type)).join(''));
+
+            return result;
+        }
+                          );
+    }
+
+    // Mirrors the native "Will be X after Mega Evolving" note real Mega
+    // species entries get in the ability search (see BattleAbilitySearch
+    // #getBaseResults in battle-dex-search.ts) — except triggered by the
+    // Mix and Mega item instead of the species itself being a Mega forme,
+    // and without touching the set's own (starting) ability.
+    function patchMixAndMegaAbilityPreview() {
+        const proto = window.BattleAbilitySearch?.prototype;
+
+        return patchMethod(proto, 'getBaseResults', '__qolMixAndMegaPatched', (original) =>
+                           function () {
+            const results = original.call(this);
+
+            if (this.format !== 'mixandmega' || !this.set?.item) return results;
+
+            const futureAbility = mixAndMegaFutureAbility(this.dex, this.set);
+            if (!futureAbility) return results;
+
+            return [
+                ['html', `Will be <strong>${futureAbility}</strong> after Mega Evolving.`],
+                ...results,
+            ];
+        }
+                          );
+    }
+
+    // ============================================================
     // PATCH: in-battle hover speed range (Tier Shift / Mix and Mega)
     // ============================================================
 
@@ -2180,6 +2455,9 @@
             patchBattleStatGuesserGuess(),
             patchUpdateStatForm(),
             patchStatSlide(),
+            patchRenderSetTypeIcons(),
+            patchChartSetMixAndMegaTypes(),
+            patchMixAndMegaAbilityPreview(),
             patchTooltipSpeedRange(),
         ];
 
@@ -2235,6 +2513,8 @@
             return stats ? STATS.reduce((sum, stat) => sum + stats[stat], 0) : 0;
         },
         getMixAndMegaBaseStats: (set) => mixAndMegaBaseStats(window.room?.curTeam?.dex, set),
+        getMixAndMegaTypes: (set) => mixAndMegaModifiedTypes(window.room?.curTeam?.dex, set),
+        getMixAndMegaFutureAbility: (set) => mixAndMegaFutureAbility(window.room?.curTeam?.dex, set),
         getGodlyGiftBaseStats: godlyGiftDonation,
         getGodlyGiftIllegalIds,
         parseGodlyGiftRestricted,
