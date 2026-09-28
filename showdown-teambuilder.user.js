@@ -351,7 +351,6 @@
         ironplate: 'Steel',
         pixieplate: 'Fairy',
     };
-
     function resolveSpecialMixAndMegaForme(dex, item) {
         if (!item?.id) return null;
 
@@ -447,24 +446,48 @@
     }
 
     function mixAndMegaBaseStats(dex, set) {
-        if (!set?.species || !set?.item || !dex) return null;
+    if (!set?.species || !set?.item || !dex) return null;
 
-        const species = dex.species.get(set.species);
-        const item = dex.items.get(set.item);
-        if (!species?.exists || !item?.exists) return null;
+    const species = dex.species.get(set.species);
+    const item = dex.items.get(set.item);
+    if (!species?.exists || !item?.exists) return null;
 
-        const forme = resolveMegaForme(dex, item);
-        if (!forme) return null;
+    const forme = resolveMegaForme(dex, item);
+    if (!forme) return null;
 
-        const stats = Object.assign({}, species.baseStats);
+    const stats = Object.assign({}, species.baseStats);
 
-        for (const stat of BOOSTABLE_STATS) {
-            const delta = forme.formeSpecies.baseStats[stat] - forme.baseSpecies.baseStats[stat];
-            stats[stat] = Math.max(1, Math.min(255, stats[stat] + delta));
+    // Showdown already gives certain formes their forme-specific
+    // stats (Zamazenta-Crowned, Palkia-Origin, etc.). For those,
+    // compare the MnM forme against the actual species forme rather
+    // than adding the forme's delta on top of an already-modified
+    // species.
+    const speciesBase = species.baseSpecies
+        ? dex.species.get(species.baseSpecies)
+        : species;
+
+    for (const stat of BOOSTABLE_STATS) {
+        const delta =
+            forme.formeSpecies.baseStats[stat] -
+            forme.baseSpecies.baseStats[stat];
+
+        // If the selected Pokémon is already the same forme that
+        // the item represents, don't apply its delta again.
+        if (
+            species.name === forme.formeSpecies.name ||
+            species.name === forme.baseSpecies.name
+        ) {
+            continue;
         }
 
-        return stats;
+        stats[stat] = Math.max(
+            1,
+            Math.min(255, stats[stat] + delta)
+        );
     }
+
+    return stats;
+}
 
     // ------------------------------------------------------------
     // Type / ability preview
@@ -491,8 +514,22 @@
     function mixAndMegaFutureAbility(dex, set) {
         if (!set?.species || !set?.item || !dex) return null;
 
+        const species = dex.species.get(set.species);
         const item = dex.items.get(set.item);
-        if (!item?.exists) return null;
+
+        if (!species?.exists || !item?.exists) return null;
+
+        // Showdown already applies the ability of these forme-based
+        // transformations to the selected species. Don't display a
+        // misleading "Ability after Mega Evolving" preview.
+        if (
+            species.battleOnly ||
+            species.forme === 'Crowned' ||
+            species.forme === 'Origin' ||
+            species.forme === 'Primal'
+        ) {
+            return null;
+        }
 
         const forme = resolveMegaForme(dex, item);
         return forme?.formeSpecies.abilities['0'] || null;
@@ -614,8 +651,8 @@
         let note = chart.find('.mnm-speed-note');
         if (!note.length) {
             note = $(
-                '<div class="mnm-speed-note" style="position:absolute;left:300px;top:350px;z-index:10;">' +
-                'Note: Speed is <span class="mnm-speed-value">0</span> before Mega Evolving</div>'
+                '<div class="mnm-speed-note" style="position:absolute;left:330px;top:350px;z-index:10;">' +
+                'Speed is <span class="mnm-speed-value">0</span> before Mega Evolving</div>'
             );
             chart.find('.basestatscol').after(note);
         }
