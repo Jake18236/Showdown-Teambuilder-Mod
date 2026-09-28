@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      2.7
+// @version      2.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -810,7 +810,7 @@
     // ------------------------------------------------------------
 
     const ALLOWED_POKEMON_FILTER_TYPES =
-          ['type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists',
+          ['type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
            'natdex', 'fe', 'recovery', 'pivot', 'priority'];
 
     // ------------------------------------------------------------
@@ -1057,12 +1057,15 @@
     // Validates + normalizes `[type, value]` the way native addFilter
     // would, then stores it (negated or not).
     function addPokemonSearchFilter(engine, type, value, negated) {
-        if (type === 'weak' || type === 'resists') {
+        if (
+            type === 'weak' ||
+            type === 'resists' ||
+            type === 'neutral'
+        ) {
             const target = engine.capitalizeFirst(value);
             if (!window.BattleTypeChart?.[toID(target)]) return false;
             return pushPokemonFilter(engine, type, target, negated);
         }
-
         if (!ALLOWED_POKEMON_FILTER_TYPES.includes(type)) return false;
 
         const normalized = normalizePokemonFilterValue(engine, type, value);
@@ -1166,7 +1169,11 @@
         }
 
         if (searchKind === 'resists') {
-            return effectiveness < 1;
+            return effectiveness > 0 && effectiveness < 1;
+        }
+
+        if (searchKind === 'neutral') {
+            return effectiveness === 1;
         }
 
         return false;
@@ -1193,10 +1200,15 @@
                     const kind = baseFilterType(filter[0]);
                     let text = filter[1];
 
-                    if (kind === 'weak') {
-                        text = 'Weak ' + text.charAt(0).toUpperCase() + text.slice(1);
-                    } else if (kind === 'resists') {
-                        text = 'Resists ' + text.charAt(0).toUpperCase() + text.slice(1);
+                    if (
+                        kind === 'weak' ||
+                        kind === 'resists' ||
+                        kind === 'neutral'
+                    ) {
+                        const label = kind.charAt(0).toUpperCase() + kind.slice(1);
+                        text = label + ' ' +
+                            text.charAt(0).toUpperCase() +
+                            text.slice(1);
                     } else {
                         if (kind === 'move') {
                             text = Dex.moves.get(text).name;
@@ -1400,72 +1412,63 @@
     // the real search instance. The chip itself is left in `filters`;
     // it's never used to reject a row (see patchEffectivenessSearchFilters).
     function patchNatdexSearchLegality() {
-    const search = getTeambuilderRoom()?.search?.engine?.typedSearch;
-    const proto = findPrototypeWithMethod(search, 'getResults');
+    const proto = window.BattlePokemonSearch?.prototype;
 
     return patchMethod(
         proto,
         'getResults',
         '__qolNatdexPatched',
         (original) =>
-            function (filters, sortCol, reverseSort) {
-                const hasNatdex =
-                    this.searchType === 'pokemon' &&
-                    Array.isArray(filters) &&
-                    filters.some(
-                        ([rawType]) =>
-                            baseFilterType(rawType) === 'natdex'
-                    );
+        function (filters, sortCol, reverseSort) {
+            const hasNatdex =
+                this.searchType === 'pokemon' &&
+                Array.isArray(filters) &&
+                filters.some(
+                    ([rawType]) =>
+                        baseFilterType(rawType) === 'natdex'
+                );
 
-                if (!hasNatdex) {
-                    return original.call(
-                        this,
-                        filters,
-                        sortCol,
-                        reverseSort
-                    );
-                }
+            /*
+             * NATDEX MODE
+             *
+             * Use the complete Pokédex as the legal pool.
+             * This includes mons that the current format normally
+             * considers dexited / illegal.
+             */
+            if (hasNatdex) {
+                this.baseResults = this.getDefaultResults();
+                this.baseIllegalResults = [];
+                this.illegalReasons = {};
 
-                const savedFormat = this.format;
+                this.__qolNatdexPoolActive = true;
 
-                // Throw away the current cached legality pool.
+                return original.call(
+                    this,
+                    filters,
+                    sortCol,
+                    reverseSort
+                );
+            }
+
+            /*
+             * We previously replaced the legality pool with the full
+             * Pokédex. Once the NatDex filter disappears, throw that
+             * cache away so Showdown rebuilds the real format legality.
+             */
+            if (this.__qolNatdexPoolActive) {
+                this.__qolNatdexPoolActive = false;
                 this.baseResults = null;
                 this.baseIllegalResults = null;
                 this.illegalReasons = null;
-
-                // Make Showdown calculate legality using a format where
-                // everything we care about is legal.
-                this.format = 'gen9purehackmons';
-
-                try {
-                    const result = original.call(
-                        this,
-                        filters,
-                        sortCol,
-                        reverseSort
-                    );
-
-                    return result
-                        .filter(row => row[0] !== 'header')
-                        .map(row => {
-                            if (row[0] !== 'pokemon') return row;
-
-                            const cleanRow = row.slice();
-                            cleanRow[4] = undefined;
-
-                            return cleanRow;
-                        });
-
-                } finally {
-                    this.format = savedFormat;
-
-                    // DO NOT restore the Pure Hackmons cache.
-                    // Force the next normal search to rebuild.
-                    this.baseResults = null;
-                    this.baseIllegalResults = null;
-                    this.illegalReasons = null;
-                }
             }
+
+            return original.call(
+                this,
+                filters,
+                sortCol,
+                reverseSort
+            );
+        }
     );
 }
 
@@ -1508,9 +1511,19 @@
                 }
 
                 let matches;
-                if (type === 'weak' || type === 'resists') {
-                    matches = pokemonMatchesEffectiveness(this.dex, species, type, target);
-                } else if (CUSTOM_TOGGLE_FILTERS[type]) {
+                if (
+                    type === 'weak' ||
+                    type === 'resists' ||
+                    type === 'neutral'
+                ) {
+                    matches = pokemonMatchesEffectiveness(
+                        this.dex,
+                        species,
+                        type,
+                        target
+                    );
+                }
+                else if (CUSTOM_TOGGLE_FILTERS[type]) {
                     matches = pokemonMatchesCustomToggle(this, original, row, species, type);
                 } else {
                     matches = original.call(this, row, [[type, target]]);
@@ -1556,7 +1569,7 @@
                 const searchQuery = negateQuery ? rawQuery.slice(1).trim() : rawQuery;
 
                 const match = searchQuery.match(
-                    /^(weak|resists)(?:\s+(.*))?$/i
+                    /^(weak|resists|neutral)(?:\s+(.*))?$/i
                 );
 
                 // Anything that isn't "weak"/"resists" (negated or not).
@@ -1680,7 +1693,12 @@
                 // Directly supplied positive custom filters (e.g. from
                 // the debug console API, using the real type name rather
                 // than a suggestion row).
-                if (rawType === 'weak' || rawType === 'resists' || CUSTOM_TOGGLE_FILTERS[rawType]) {
+                if (
+                    rawType === 'weak' ||
+                    rawType === 'resists' ||
+                    rawType === 'neutral' ||
+                    CUSTOM_TOGGLE_FILTERS[rawType]
+                ) {
                     return addPokemonSearchFilter(this, rawType, entry[1], false);
                 }
 
@@ -1710,7 +1728,7 @@
                 const negated = rawQuery.startsWith('!');
                 const q = (negated ? rawQuery.slice(1) : rawQuery).trim().toLowerCase();
 
-                const match = q.match(/^(weak|resists)(?:\s+(.*))?$/);
+                const match = q.match(/^(weak|resists|neutral)(?:\s+(.*))?$/);
 
                 // Not "weak"/"resists" (negated or not).
                 if (!match) {
@@ -1808,10 +1826,16 @@
                     return original.call(this, query);
                 }
 
+                const modeLabel = {
+                    weak: 'Weak',
+                    resists: 'Resists',
+                    neutral: 'Neutral',
+                }[mode];
+
                 const results = [
                     [
                         'header',
-                        (negated ? 'Not ' : '') + (mode === 'weak' ? 'Weak' : 'Resists')
+                        (negated ? 'Not ' : '') + modeLabel
                     ],
                 ];
 
@@ -1921,7 +1945,11 @@
                     : String(result[1]).charAt(0).toUpperCase() +
                           String(result[1]).slice(1);
 
-                    const label = mode === 'weak' ? 'Weak' : 'Resists';
+                    const label = {
+                        weak: 'Weak',
+                        resists: 'Resists',
+                        neutral: 'Neutral',
+                    }[mode];
                     return this.__qolNegateMode
                         ? `Not ${label} ${typeName}`
                         : `${label} ${typeName}`;
@@ -2010,7 +2038,11 @@
                 const mode = this.engine?.__qolEffectivenessMode;
 
                 if (mode && type === 'type') {
-                    const label = mode === 'weak' ? 'Weak' : 'Resists';
+                    const label = {
+                        weak: 'Weak',
+                        resists: 'Resists',
+                        neutral: 'Neutral',
+                    }[mode];
                     const prefix = this.engine?.__qolNegateMode
                     ? `!${label}`
                     : label;
@@ -2279,20 +2311,20 @@
     }
 
     function patchStatSlide() {
-        const proto = window.TeambuilderRoom?.prototype;
+    const proto = window.TeambuilderRoom?.prototype;
 
-        return patchMethod(proto, 'statSlide', '__qolPatched', (original) =>
-                           function (...args) {
+    return patchMethod(proto, 'statSlide', '__qolPatched', (original) =>
+        function (...args) {
             const result = original.apply(this, args);
 
             if (getActiveMod(this) === MOD.MIX_AND_MEGA) {
-                requestAnimationFrame(() => updateMixAndMegaSpeedNote(this));
+                updateMixAndMegaSpeedNote(this);
             }
 
             return result;
         }
-                          );
-    }
+    );
+}
 
     // ============================================================
     // PATCH: type icons + ability preview (Mix and Mega)
@@ -2391,57 +2423,106 @@
     // ============================================================
 
     function patchTooltipSpeedRange() {
-        const rooms = window.app?.rooms;
-        if (!rooms) return false;
+    const rooms = window.app?.rooms;
+    if (!rooms) return false;
 
-        let patchedAny = false;
+    let patchedAny = false;
+    const seenProtos = new Set();
 
-        for (const room of Object.values(rooms)) {
-            const tooltips = room?.tooltips;
+    for (const room of Object.values(rooms)) {
+        const tooltips = room?.tooltips;
+        if (!tooltips || typeof tooltips.getSpeedRange !== 'function') {
+            continue;
+        }
 
-            if (
-                !tooltips ||
-                tooltips.constructor?.name !== 'BattleTooltips' ||
-                typeof tooltips.getSpeedRange !== 'function'
-            ) {
-                continue;
-            }
+        // Find the prototype that actually owns getSpeedRange.
+        let proto = tooltips;
+        while (proto && !Object.prototype.hasOwnProperty.call(proto, 'getSpeedRange')) {
+            proto = Object.getPrototypeOf(proto);
+        }
 
-            const proto = Object.getPrototypeOf(tooltips);
+        if (!proto || seenProtos.has(proto)) continue;
+        seenProtos.add(proto);
 
-            const patched = patchMethod(proto, 'getSpeedRange', '__qolPatched', (original) =>
-                                        function (pokemon, ...args) {
+        const patched = patchMethod(
+            proto,
+            'getSpeedRange',
+            '__qolSpeedRangePatched',
+            (original) =>
+            function (pokemon, ...args) {
                 const callOriginal = () => original.call(this, pokemon, ...args);
 
-                if (!pokemon?.getSpecies) return callOriginal();
+                if (!pokemon?.getSpecies) {
+                    return callOriginal();
+                }
 
                 const originalSpecies = pokemon.getSpecies();
-                if (!originalSpecies?.baseStats) return callOriginal();
+                if (!originalSpecies?.baseStats) {
+                    return callOriginal();
+                }
 
                 const battle = this.battle;
-                const rules = battle?.rules || {};
-                const formatId = String(battle?.format?.id || '').toLowerCase();
+                if (!battle) {
+                    return callOriginal();
+                }
 
+                const formatId = String(
+                    battle.format?.id ||
+                    battle.format?.name ||
+                    ''
+                ).toLowerCase();
+
+                // -------------------------
+                // Tier Shift
+                // -------------------------
                 const isTierShift =
-                      Object.keys(rules).some((r) => String(r).toLowerCase().includes('tier shift')) ||
-                      formatId.includes('tiershift');
-                const isMixAndMega = formatId.includes('mixandmega');
+                    formatId.includes('tiershift') ||
+                    Object.keys(battle.rules || {}).some(rule =>
+                        String(rule).toLowerCase().includes('tier shift')
+                    );
 
                 if (isTierShift) {
                     const boost = getTierShiftBoost(originalSpecies.tier);
+
                     if (boost) {
                         const shifted = Object.assign({}, originalSpecies, {
                             baseStats: Object.assign({}, originalSpecies.baseStats, {
                                 spe: originalSpecies.baseStats.spe + boost,
                             }),
                         });
-                        return withOverriddenGetSpecies(pokemon, shifted, callOriginal);
+
+                        return withOverriddenGetSpecies(
+                            pokemon,
+                            shifted,
+                            callOriginal
+                        );
                     }
                 }
 
+                // -------------------------
+                // Mix and Mega
+                // -------------------------
+                const isMixAndMega =
+                    formatId.includes('mixandmega');
+
                 if (isMixAndMega && pokemon.item) {
-                    const item = battle.dex.items.get(pokemon.item);
-                    const delta = mixAndMegaStatDelta(battle.dex, item, 'spe');
+                    const dex = battle.dex;
+
+                    if (!dex?.items?.get) {
+                        return callOriginal();
+                    }
+
+                    const item = dex.items.get(pokemon.item);
+
+                    if (!item?.exists) {
+                        return callOriginal();
+                    }
+
+                    const delta = mixAndMegaStatDelta(
+                        dex,
+                        item,
+                        'spe'
+                    );
 
                     if (delta) {
                         const shifted = Object.assign({}, originalSpecies, {
@@ -2449,19 +2530,24 @@
                                 spe: originalSpecies.baseStats.spe + delta,
                             }),
                         });
-                        return withOverriddenGetSpecies(pokemon, shifted, callOriginal);
+
+                        return withOverriddenGetSpecies(
+                            pokemon,
+                            shifted,
+                            callOriginal
+                        );
                     }
                 }
 
                 return callOriginal();
             }
-                                       );
+        );
 
-            if (patched) patchedAny = true;
-        }
-
-        return patchedAny;
+        if (patched) patchedAny = true;
     }
+
+    return patchedAny;
+}
 
     patchTooltipSpeedRange()
     // ============================================================
