@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      2.8
+// @version      3.1
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -69,10 +69,7 @@
         return getTeambuilderRoom() || (window.room?.curTeam ? window.room : null);
     }
 
-    // Godly Gift's Restricted list and Tier Shift AAA's banlist both live
-    // server-side only (they aren't shipped in the client's dex data), so
-    // checking "is this format active" also kicks off that fetch the first
-    // time it's needed.
+    // Godly Gift's Restricted list and Tier Shift AAA's banlist both live server side only for some reason
     function isGodlyGiftFormat(room) {
         const active = room?.curTeam?.format === 'gen9godlygift';
 
@@ -670,90 +667,90 @@ function patchMethod(target, key, tag, wrap) {
         updateMixAndMegaSpeedNote(room);
         updateMixAndMegaSpeedNotePosition(room);
     }
-    
+
     // ============================================================
-// CROSS EVOLUTION
-// ============================================================
+    // CROSS EVOLUTION
+    // ============================================================
 
-function isNfe(species) {
-    return species.nfe ?? (species.evos?.length > 0);
-}
-
-// Returns {species, cross, crossPrevo} if set.name is a legal cross-evolution
-// target for set.species, else null.
-function resolveCrossEvolution(dex, set) {
-    if (!dex || !set?.species || !set?.name) return null;
-
-    const species = dex.species.get(set.species);
-    const cross = dex.species.get(set.name);
-    if (!species?.exists || !cross?.exists || species.id === cross.id) return null;
-
-    if (species.battleOnly || !isNfe(species)) return null;
-    if (cross.battleOnly || !cross.prevo) return null;
-
-    const crossPrevo = dex.species.get(cross.prevo);
-    if (!crossPrevo?.exists) return null;
-
-    // Base and the target's prevo must be at the same evolution stage.
-    if (!crossPrevo.prevo !== !species.prevo) return null;
-
-    return {species, cross, crossPrevo};
-}
-
-function crossEvolutionBaseStats(dex, set) {
-    const ce = resolveCrossEvolution(dex, set);
-    if (!ce) return null;
-
-    const stats = {};
-    for (const stat of STATS) {
-        const value =
-            ce.species.baseStats[stat] +
-            ce.cross.baseStats[stat] -
-            ce.crossPrevo.baseStats[stat];
-        stats[stat] = Math.max(1, Math.min(255, value));
-    }
-    return stats;
-}
-
-function crossEvolutionTypes(dex, set) {
-    const ce = resolveCrossEvolution(dex, set);
-    if (!ce) return null;
-
-    const types = ce.species.types.slice();
-    if (ce.cross.types[0] !== ce.crossPrevo.types[0]) {
-        types[0] = ce.cross.types[0];
-    }
-    if (ce.cross.types[1] !== ce.crossPrevo.types[1]) {
-        types[1] = ce.cross.types[1] || ce.cross.types[0];
+    function isNfe(species) {
+        return species.nfe ?? (species.evos?.length > 0);
     }
 
-    return types[0] === types[1] ? [types[0]] : types.filter(Boolean);
-}
+    // Returns {species, cross, crossPrevo} if set.name is a legal cross-evolution
+    // target for set.species, else null.
+    function resolveCrossEvolution(dex, set) {
+        if (!dex || !set?.species || !set?.name) return null;
 
-// Generalized withModifiedSpecies: swap arbitrary fields, not just baseStats.
-function withSpeciesOverrides(dex, targetSpecies, overrides, fn) {
-    if (!dex?.species?.get || !targetSpecies) return fn();
+        const species = dex.species.get(set.species);
+        const cross = dex.species.get(set.name);
+        if (!species?.exists || !cross?.exists || species.id === cross.id) return null;
 
-    const originalGet = dex.species.get;
-    const modified = Object.assign({}, targetSpecies, overrides);
+        if (species.battleOnly || !isNfe(species)) return null;
+        if (cross.battleOnly || !cross.prevo) return null;
 
-    dex.species.get = function (name) {
-        const result = originalGet.call(this, name);
-        return result === targetSpecies ? modified : result;
-    };
+        const crossPrevo = dex.species.get(cross.prevo);
+        if (!crossPrevo?.exists) return null;
 
-    try {
-        return fn();
-    } finally {
-        dex.species.get = originalGet;
+        // Base and the target's prevo must be at the same evolution stage.
+        if (!crossPrevo.prevo !== !species.prevo) return null;
+
+        return {species, cross, crossPrevo};
     }
-}
 
-// Move/ability search results are cached per search instance; bust the
-// cache when the nickname (the cross-evo target) changes.
-function patchCrossEvolutionCacheBust(proto) {
-    return patchMethod(proto, 'getResults', '__qolCEKeyPatched', (original) =>
-        function (...args) {
+    function crossEvolutionBaseStats(dex, set) {
+        const ce = resolveCrossEvolution(dex, set);
+        if (!ce) return null;
+
+        const stats = {};
+        for (const stat of STATS) {
+            const value =
+                  ce.species.baseStats[stat] +
+                  ce.cross.baseStats[stat] -
+                  ce.crossPrevo.baseStats[stat];
+            stats[stat] = Math.max(1, Math.min(255, value));
+        }
+        return stats;
+    }
+
+    function crossEvolutionTypes(dex, set) {
+        const ce = resolveCrossEvolution(dex, set);
+        if (!ce) return null;
+
+        const types = ce.species.types.slice();
+        if (ce.cross.types[0] !== ce.crossPrevo.types[0]) {
+            types[0] = ce.cross.types[0];
+        }
+        if (ce.cross.types[1] !== ce.crossPrevo.types[1]) {
+            types[1] = ce.cross.types[1] || ce.cross.types[0];
+        }
+
+        return types[0] === types[1] ? [types[0]] : types.filter(Boolean);
+    }
+
+    // Generalized withModifiedSpecies: swap arbitrary fields, not just baseStats.
+    function withSpeciesOverrides(dex, targetSpecies, overrides, fn) {
+        if (!dex?.species?.get || !targetSpecies) return fn();
+
+        const originalGet = dex.species.get;
+        const modified = Object.assign({}, targetSpecies, overrides);
+
+        dex.species.get = function (name) {
+            const result = originalGet.call(this, name);
+            return result === targetSpecies ? modified : result;
+        };
+
+        try {
+            return fn();
+        } finally {
+            dex.species.get = originalGet;
+        }
+    }
+
+    // Move/ability search results are cached per search instance; bust the
+    // cache when the nickname (the cross-evo target) changes.
+    function patchCrossEvolutionCacheBust(proto) {
+        return patchMethod(proto, 'getResults', '__qolCEKeyPatched', (original) =>
+                           function (...args) {
             if (this.format === 'crossevolution' && this.set) {
                 const key = [
                     this.set.species || '',
@@ -770,91 +767,91 @@ function patchCrossEvolutionCacheBust(proto) {
 
             return original.apply(this, args);
         }
-    );
-}
-
-// Runs fn with the search temporarily pointed at a different species.
-function withSearchSpecies(search, speciesName, fn) {
-    const savedSpecies = search.species;
-    const savedSet = search.set;
-
-    search.species = toID(speciesName);
-    search.set = Object.assign({}, savedSet, {species: speciesName, name: ''});
-
-    try {
-        return fn();
-    } finally {
-        search.species = savedSpecies;
-        search.set = savedSet;
+                          );
     }
-}
 
-// Splits a flat result list into {header, rows} sections.
-function splitIntoSections(rows) {
-    const sections = [];
-    let cur = {header: null, rows: []};
-    sections.push(cur);
+    // Runs fn with the search temporarily pointed at a different species.
+    function withSearchSpecies(search, speciesName, fn) {
+        const savedSpecies = search.species;
+        const savedSet = search.set;
 
-    for (const row of rows) {
-        if (row[0] === 'header') {
-            cur = {header: row, rows: []};
-            sections.push(cur);
-        } else {
-            cur.rows.push(row);
+        search.species = toID(speciesName);
+        search.set = Object.assign({}, savedSet, {species: speciesName, name: ''});
+
+        try {
+            return fn();
+        } finally {
+            search.species = savedSpecies;
+            search.set = savedSet;
         }
     }
-    return sections;
-}
 
-// Adds each move from `extra` that `base` lacks into the section with the
-// same header, so the movepools read as one list.
-function mergeMoveResults(base, extra) {
-    const sections = splitIntoSections(base);
-    const sectionKey = (s) => (s.header ? String(s.header[1]) : '');
-    const byKey = new Map(sections.map((s) => [sectionKey(s), s]));
+    // Splits a flat result list into {header, rows} sections.
+    function splitIntoSections(rows) {
+        const sections = [];
+        let cur = {header: null, rows: []};
+        sections.push(cur);
 
-    const have = new Set(base.filter((r) => r[0] === 'move').map((r) => r[1]));
-    const wasSorted = new Map(
-        sections.map((s) => {
-            const ids = s.rows.map((r) => String(r[1]));
-            return [s, ids.every((id, i) => i === 0 || ids[i - 1] <= id)];
-        })
-    );
-    const touched = new Set();
-
-    for (const section of splitIntoSections(extra)) {
-        for (const row of section.rows) {
-            if (row[0] !== 'move' || have.has(row[1])) continue;
-            have.add(row[1]);
-
-            let target = byKey.get(sectionKey(section));
-            if (!target) {
-                target = {header: section.header, rows: []};
-                sections.push(target);
-                byKey.set(sectionKey(section), target);
-                wasSorted.set(target, true);
+        for (const row of rows) {
+            if (row[0] === 'header') {
+                cur = {header: row, rows: []};
+                sections.push(cur);
+            } else {
+                cur.rows.push(row);
             }
-
-            target.rows.push(row);
-            touched.add(target);
         }
+        return sections;
     }
 
-    // Keep alphabetical order in any section that already had it.
-    for (const s of touched) {
-        if (wasSorted.get(s)) {
-            s.rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+    // Adds each move from `extra` that `base` lacks into the section with the
+    // same header, so the movepools read as one list.
+    function mergeMoveResults(base, extra) {
+        const sections = splitIntoSections(base);
+        const sectionKey = (s) => (s.header ? String(s.header[1]) : '');
+        const byKey = new Map(sections.map((s) => [sectionKey(s), s]));
+
+        const have = new Set(base.filter((r) => r[0] === 'move').map((r) => r[1]));
+        const wasSorted = new Map(
+            sections.map((s) => {
+                const ids = s.rows.map((r) => String(r[1]));
+                return [s, ids.every((id, i) => i === 0 || ids[i - 1] <= id)];
+            })
+        );
+        const touched = new Set();
+
+        for (const section of splitIntoSections(extra)) {
+            for (const row of section.rows) {
+                if (row[0] !== 'move' || have.has(row[1])) continue;
+                have.add(row[1]);
+
+                let target = byKey.get(sectionKey(section));
+                if (!target) {
+                    target = {header: section.header, rows: []};
+                    sections.push(target);
+                    byKey.set(sectionKey(section), target);
+                    wasSorted.set(target, true);
+                }
+
+                target.rows.push(row);
+                touched.add(target);
+            }
         }
+
+        // Keep alphabetical order in any section that already had it.
+        for (const s of touched) {
+            if (wasSorted.get(s)) {
+                s.rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+            }
+        }
+
+        return sections.flatMap((s) => (s.header ? [s.header, ...s.rows] : s.rows));
     }
 
-    return sections.flatMap((s) => (s.header ? [s.header, ...s.rows] : s.rows));
-}
+    function patchCrossEvolutionMoveSearch() {
+        const proto = window.BattleMoveSearch?.prototype;
 
-function patchCrossEvolutionMoveSearch() {
-    const proto = window.BattleMoveSearch?.prototype;
-
-    const a = patchMethod(proto, 'getBaseResults', '__qolCEPatched', (original) =>
-        function () {
+        const a = patchMethod(proto, 'getBaseResults', '__qolCEPatched', (original) =>
+                              function () {
             const results = original.call(this);
             if (this.format !== 'crossevolution') return results;
 
@@ -864,17 +861,17 @@ function patchCrossEvolutionMoveSearch() {
             const crossResults = withSearchSpecies(this, ce.cross.name, () => original.call(this));
             return mergeMoveResults(results, crossResults);
         }
-    );
+                             );
 
-    return a && patchCrossEvolutionCacheBust(proto);
-}
+        return a && patchCrossEvolutionCacheBust(proto);
+    }
 
-// Abilities: show the target's abilities in the ability picker.
-function patchCrossEvolutionAbilitySearch() {
-    const proto = window.BattleAbilitySearch?.prototype;
+    // Abilities: show the target's abilities in the ability picker.
+    function patchCrossEvolutionAbilitySearch() {
+        const proto = window.BattleAbilitySearch?.prototype;
 
-    const a = patchMethod(proto, 'getBaseResults', '__qolCEPatched', (original) =>
-        function () {
+        const a = patchMethod(proto, 'getBaseResults', '__qolCEPatched', (original) =>
+                              function () {
             if (this.format !== 'crossevolution') return original.call(this);
 
             const ce = resolveCrossEvolution(this.dex, this.set);
@@ -887,169 +884,210 @@ function patchCrossEvolutionAbilitySearch() {
                 () => original.call(this)
             );
         }
-    );
+                             );
 
-    return a && patchCrossEvolutionCacheBust(proto);
-}
+        return a && patchCrossEvolutionCacheBust(proto);
+    }
 
-// Refresh type icons + base stat column as soon as the nickname changes.
-// ============================================================
-// CROSS EVOLUTION UI REFRESH
-// ============================================================
+    function patchCrossEvolutionStatForm() {
+        const proto = window.TeambuilderRoom?.prototype;
 
-let ceRefreshFrame = null;
-let ceLastNickname = null;
+        return patchMethod(
+            proto,
+            'updateStatForm',
+            '__qolCEStatFormPatched',
+            (original) => function (...args) {
+                if (getActiveMod(this) !== MOD.CROSS_EVOLUTION) {
+                    return original.apply(this, args);
+                }
 
-function refreshCrossEvolutionSet(room, nicknameOverride = null) {
-    if (!room || getActiveMod(room) !== MOD.CROSS_EVOLUTION) return;
+                const set = this.curSet;
+                const dex = this.curTeam?.dex;
 
-    const set = room.curSet;
-    const dex = room.curTeam?.dex;
+                if (!set?.species || !dex) {
+                    return original.apply(this, args);
+                }
 
-    if (!set?.species || !dex) return;
+                const ceStats = crossEvolutionBaseStats(dex, set);
 
-    // During live typing, Showdown may not have committed the nickname
-    // to curSet.name yet. Use the input's current value instead.
-    const name = nicknameOverride !== null
+                if (!ceStats) {
+                    return original.apply(this, args);
+                }
+
+                const species = dex.species.get(set.species);
+
+                if (!species) {
+                    return original.apply(this, args);
+                }
+
+                return withSpeciesOverrides(
+                    dex,
+                    species,
+                    {baseStats: ceStats},
+                    () => original.apply(this, args)
+                );
+            }
+        );
+    }
+
+    // Refresh type icons + base stat column as soon as the nickname changes.
+    // ============================================================
+    // CROSS EVOLUTION UI REFRESH
+    // ============================================================
+
+    let ceRefreshFrame = null;
+    let ceLastNickname = null;
+
+    function refreshCrossEvolutionSet(room, nicknameOverride = null) {
+        if (!room || getActiveMod(room) !== MOD.CROSS_EVOLUTION) return;
+
+        const set = room.curSet;
+        const dex = room.curTeam?.dex;
+
+        if (!set?.species || !dex) return;
+
+        // During live typing, Showdown may not have committed the nickname
+        // to curSet.name yet. Use the input's current value instead.
+        const name = nicknameOverride !== null
         ? nicknameOverride.trim()
         : String(set.name || '').trim();
 
-    // Use a temporary view of the set so the CE calculations see the
-    // nickname being typed without permanently modifying Showdown's set.
-    const liveSet = name === set.name
+        // Use a temporary view of the set so the CE calculations see the
+        // nickname being typed without permanently modifying Showdown's set.
+        const liveSet = name === set.name
         ? set
         : Object.assign({}, set, {name});
 
-    const types =
-        crossEvolutionTypes(dex, liveSet) ||
-        dex.species.get(set.species)?.types ||
-        [];
+        const types =
+              crossEvolutionTypes(dex, liveSet) ||
+              dex.species.get(set.species)?.types ||
+              [];
 
-    // --------------------------------------------------------
-    // Types
-    // --------------------------------------------------------
+        // --------------------------------------------------------
+        // Types
+        // --------------------------------------------------------
 
-    room.$('.setcell-typeicons').html(
-        types.map(t => Dex.getTypeIcon(t)).join('')
-    );
+        room.$('.setcell-typeicons').html(
+            types.map(t => Dex.getTypeIcon(t)).join('')
+        );
 
-    // --------------------------------------------------------
-    // Stats
-    // --------------------------------------------------------
+        // --------------------------------------------------------
+        // Stats
+        // --------------------------------------------------------
 
-    // updateStatForm() normally reads curSet, so temporarily give
-    // it the live nickname as well.
-    if (liveSet !== set) {
+        // updateStatForm() normally reads curSet, so temporarily give
+        // it the live nickname as well.
+        const originalSet = room.curSet;
+
         room.curSet = liveSet;
-
         try {
+            // Updates .basestatscol
             room.updateStatForm();
+
+            // Updates the stat rows / graphs
+            room.updateStatGraph();
         } finally {
-            room.curSet = set;
+            room.curSet = originalSet;
         }
-    } else {
-        room.updateStatForm();
-    }
+        // --------------------------------------------------------
+        // Search caches
+        // --------------------------------------------------------
 
-    // --------------------------------------------------------
-    // Search caches
-    // --------------------------------------------------------
+        const engine = room.search?.engine;
 
-    const engine = room.search?.engine;
+        if (engine) {
+            for (const search of [
+                engine.moveSearch,
+                engine.abilitySearch,
+            ]) {
+                if (!search) continue;
 
-    if (engine) {
-        for (const search of [
-            engine.moveSearch,
-            engine.abilitySearch,
-        ]) {
-            if (!search) continue;
-
-            search.__qolCEKey = null;
-            search.baseResults = null;
-            search.baseIllegalResults = null;
-        }
-    }
-
-    // --------------------------------------------------------
-    // Refresh active search
-    // --------------------------------------------------------
-
-    const search = room.search;
-
-    if (search) {
-        if (typeof search.update === 'function') {
-            search.update();
-        } else if (typeof search.updateResults === 'function') {
-            search.updateResults();
-        }
-    }
-}
-
-function scheduleCrossEvolutionRefresh(room, nickname = null) {
-    if (!room) return;
-
-    if (ceRefreshFrame !== null) {
-        cancelAnimationFrame(ceRefreshFrame);
-    }
-
-    ceRefreshFrame = requestAnimationFrame(() => {
-        ceRefreshFrame = null;
-
-        if (
-            getActiveTeambuilderRoom() !== room ||
-            getActiveMod(room) !== MOD.CROSS_EVOLUTION
-        ) {
-            return;
+                search.__qolCEKey = null;
+                search.baseResults = null;
+                search.baseIllegalResults = null;
+            }
         }
 
-        const name = nickname !== null
+        // --------------------------------------------------------
+        // Refresh active search
+        // --------------------------------------------------------
+
+        const search = room.search;
+
+        if (search) {
+            if (typeof search.update === 'function') {
+                search.update();
+            } else if (typeof search.updateResults === 'function') {
+                search.updateResults();
+            }
+        }
+    }
+
+    function scheduleCrossEvolutionRefresh(room, nickname = null) {
+        if (!room) return;
+
+        if (ceRefreshFrame !== null) {
+            cancelAnimationFrame(ceRefreshFrame);
+        }
+
+        ceRefreshFrame = requestAnimationFrame(() => {
+            ceRefreshFrame = null;
+
+            if (
+                getActiveTeambuilderRoom() !== room ||
+                getActiveMod(room) !== MOD.CROSS_EVOLUTION
+            ) {
+                return;
+            }
+
+            const name = nickname !== null
             ? String(nickname).trim()
             : String(room.curSet?.name || '').trim();
 
-        if (name === ceLastNickname) return;
+            if (name === ceLastNickname) return;
 
-        ceLastNickname = name;
+            ceLastNickname = name;
 
-        refreshCrossEvolutionSet(room, name);
-    });
-}
+            refreshCrossEvolutionSet(room, name);
+        });
+    }
 
-let ceNicknameListenerInstalled = false;
+    let ceNicknameListenerInstalled = false;
 
-function installCrossEvolutionNicknameListener() {
-    if (ceNicknameListenerInstalled) return;
-    ceNicknameListenerInstalled = true;
+    function installCrossEvolutionNicknameListener() {
+        if (ceNicknameListenerInstalled) return;
+        ceNicknameListenerInstalled = true;
 
-    const handler = (e) => {
-        const input = e.target;
+        const handler = (e) => {
+            const input = e.target;
 
-        if (
-            !(input instanceof HTMLInputElement) ||
-            input.name !== 'nickname'
-        ) {
-            return;
-        }
+            if (
+                !(input instanceof HTMLInputElement) ||
+                input.name !== 'nickname'
+            ) {
+                return;
+            }
 
-        const room = getActiveTeambuilderRoom();
+            const room = getActiveTeambuilderRoom();
 
-        if (
-            !room ||
-            getActiveMod(room) !== MOD.CROSS_EVOLUTION
-        ) {
-            return;
-        }
+            if (
+                !room ||
+                getActiveMod(room) !== MOD.CROSS_EVOLUTION
+            ) {
+                return;
+            }
 
-        // IMPORTANT:
-        // Use the input's value directly. Showdown does not necessarily
-        // commit this value to curSet.name until blur/change.
-        scheduleCrossEvolutionRefresh(room, input.value);
-    };
+            // IMPORTANT:
+            // Use the input's value directly. Showdown does not necessarily
+            // commit this value to curSet.name until blur/change.
+            scheduleCrossEvolutionRefresh(room, input.value);
+        };
 
-    document.addEventListener('input', handler, true);
-    document.addEventListener('change', handler, true);
-}
-    
-    
+        document.addEventListener('input', handler, true);
+        document.addEventListener('change', handler, true);
+    }
+
+
 
     // ============================================================
     // GODLY GIFT
@@ -2965,10 +3003,10 @@ function installCrossEvolutionNicknameListener() {
             patchEffectivenessFilterText(),
             patchCurrentEffectivenessSearch(),
             patchEffectivenessSetType(),
-            
+
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
-
+            patchCrossEvolutionStatForm(),
 
             patchSearchSort(),
             patchSearchRenderer(),
@@ -3056,5 +3094,5 @@ function installCrossEvolutionNicknameListener() {
         getCustomToggleMoveIds: (kind, dex) => getCustomToggleMoveIds(dex || window.room?.curTeam?.dex, kind),
         patch: patchEverything,
     };
-    installCrossEvolutionNicknameListener(); 
+    installCrossEvolutionNicknameListener();
 })();
