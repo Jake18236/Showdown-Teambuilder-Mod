@@ -4,6 +4,17 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 ## Some features
 
+**Global Commands**
+- Weak [type]
+- Resists [type]
+- Neutral [type]
+- Pivot
+- Recovery (Life Dew does not count)
+- FE (fully evolved)
+- Priority
+- Natdex (its actually just PH legality though)
+- Negate command "!" that works for all filters (eg !fire, !weak ice, !FE)
+
 **For Tier Shift:**
 - Automatically applies Tier Shift's base-stat boosts.
 - Displays the modified stats in the Teambuilder.
@@ -17,16 +28,29 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 **For Mix N Mega:**
 - Calculates Pokémon stats after Mega Evolution.
-- Applies the appropriate Mega Stone stat changes.
+- Applies the appropriate Mega Stone changes.
 - Displays modified base stats in the Teambuilder.
 - Calculates final stats using the modified stats.
 - Accounts for Mix and Mega's Speed-related mechanics.
+- Base speed pre-mega is noted
 
 **For Godly Gift:**
 - Applies the God's base stat to the appropriate team position.
 - Supports all donated stats.
 - Updates displayed base stats.
 - Prevents additional Restricted Pokémon from appearing as legal team members once a God has been selected.
+
+**For Cross Evolution**
+- Automatically applies cross evolved features
+- "Into [pokemon]" and "[pokemon] into" commands that work very well
+- Speed tooltips
+
+**For Scalemons**
+- Turns gen9anythinggoes into Scalemons
+- Displays all stats scaled
+- Speed Tooltips
+
+
 ## Installation for Chrome, Firefox, Edge
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
