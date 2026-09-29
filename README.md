@@ -46,7 +46,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Speed tooltips
 
 **For Scalemons**
-- Turns gen9anythinggoes into Scalemons
+- Turns gen9aaaubers into Scalemons
 - Displays all stats scaled
 - Speed Tooltips
 
