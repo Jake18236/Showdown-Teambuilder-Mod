@@ -40,6 +40,11 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Updates displayed base stats.
 - Prevents additional Restricted Pokémon from appearing as legal team members once a God has been selected.
 
+
+**For Bad N Boosted**
+- Automatically applies boosts in base stats, real stats, visuals, and search. 
+- Speed tooltips
+  
 **For Cross Evolution**
 - Automatically applies cross evolved features
 - "Into [pokemon]" and "[pokemon] into" commands that work very well
