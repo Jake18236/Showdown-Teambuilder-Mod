@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      3.1
+// @version      3.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -69,7 +69,10 @@
         return getTeambuilderRoom() || (window.room?.curTeam ? window.room : null);
     }
 
-    // Godly Gift's Restricted list and Tier Shift AAA's banlist both live server side only for some reason
+    // Godly Gift's Restricted list and Tier Shift AAA's banlist both live
+    // server-side only (they aren't shipped in the client's dex data), so
+    // checking "is this format active" also kicks off that fetch the first
+    // time it's needed.
     function isGodlyGiftFormat(room) {
         const active = room?.curTeam?.format === 'gen9godlygift';
 
@@ -889,46 +892,7 @@ function patchMethod(target, key, tag, wrap) {
         return a && patchCrossEvolutionCacheBust(proto);
     }
 
-    function patchCrossEvolutionStatForm() {
-        const proto = window.TeambuilderRoom?.prototype;
 
-        return patchMethod(
-            proto,
-            'updateStatForm',
-            '__qolCEStatFormPatched',
-            (original) => function (...args) {
-                if (getActiveMod(this) !== MOD.CROSS_EVOLUTION) {
-                    return original.apply(this, args);
-                }
-
-                const set = this.curSet;
-                const dex = this.curTeam?.dex;
-
-                if (!set?.species || !dex) {
-                    return original.apply(this, args);
-                }
-
-                const ceStats = crossEvolutionBaseStats(dex, set);
-
-                if (!ceStats) {
-                    return original.apply(this, args);
-                }
-
-                const species = dex.species.get(set.species);
-
-                if (!species) {
-                    return original.apply(this, args);
-                }
-
-                return withSpeciesOverrides(
-                    dex,
-                    species,
-                    {baseStats: ceStats},
-                    () => original.apply(this, args)
-                );
-            }
-        );
-    }
 
     // Refresh type icons + base stat column as soon as the nickname changes.
     // ============================================================
@@ -3006,7 +2970,7 @@ function patchMethod(target, key, tag, wrap) {
 
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
-            patchCrossEvolutionStatForm(),
+
 
             patchSearchSort(),
             patchSearchRenderer(),
