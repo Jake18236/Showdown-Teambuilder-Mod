@@ -36,7 +36,7 @@
     SCALEMONS: 'scalemons'
 };
     
-    const SCALEMONS_FORMAT = 'gen9anythinggoes';
+    const SCALEMONS_FORMAT = 'gen9aaaubers';
 
     const FORMAT_MOD_MAP = {
     gen9tiershift: MOD.TIER_SHIFT,
