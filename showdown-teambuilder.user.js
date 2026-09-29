@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      3.0
+// @version      3.1
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -33,17 +33,19 @@
     BAD_N_BOOSTED: 'badNBoosted',
     GODLY_GIFT: 'godlyGift',
     CROSS_EVOLUTION: 'crossEvolution',
+    SCALEMONS: 'scalemons'
 };
+    
+    const SCALEMONS_FORMAT = 'gen9anythinggoes';
 
     const FORMAT_MOD_MAP = {
-        gen9tiershift: MOD.TIER_SHIFT,
-        gen9tiershiftaaa: MOD.TIER_SHIFT,
-        gen9mixandmega: MOD.MIX_AND_MEGA,
-        gen9badnboosted: MOD.BAD_N_BOOSTED,
-        gen9crossevolution: MOD.CROSS_EVOLUTION,
-        // gen9godlygift and gen9tiershiftaaa are handled separately below
-        // (they each need a side effect: fetching their server-side banlist).
-    };
+    gen9tiershift: MOD.TIER_SHIFT,
+    gen9tiershiftaaa: MOD.TIER_SHIFT,
+    gen9mixandmega: MOD.MIX_AND_MEGA,
+    gen9badnboosted: MOD.BAD_N_BOOSTED,
+    gen9crossevolution: MOD.CROSS_EVOLUTION,
+    [SCALEMONS_FORMAT]: MOD.SCALEMONS,
+};
 
     // ============================================================
     // SHARED STATE
@@ -322,6 +324,31 @@ function patchMethod(target, key, tag, wrap) {
         if (!species?.exists) return null;
         return badNBoostedModifiedStats(species);
     }
+    
+    
+    // ============================================================
+// SCALEMONS
+// ============================================================
+
+// HP is unchanged; every other stat is scaled so BST ~= 600.
+function scalemonsModifiedStats(species) {
+    const stats = Object.assign({}, species.baseStats);
+    const others = BOOSTABLE_STATS;
+    const pst = others.reduce((sum, stat) => sum + stats[stat], 0);
+    if (!pst) return stats;
+
+    const scale = 600 - stats.hp;
+    for (const stat of others) {
+        stats[stat] = Math.max(1, Math.min(255, Math.floor(stats[stat] * scale / pst)));
+    }
+    return stats;
+}
+
+function scalemonsBaseStats(dex, set) {
+    const species = dex?.species?.get(set.species);
+    if (!species?.exists) return null;
+    return scalemonsModifiedStats(species);
+}
 
     // ============================================================
     // MIX AND MEGA
@@ -1216,6 +1243,8 @@ function patchMethod(target, key, tag, wrap) {
                 return godlyGiftBaseStats(room, set);
             case MOD.CROSS_EVOLUTION:
                 return crossEvolutionBaseStats(dex, set);
+            case MOD.SCALEMONS:
+                return scalemonsBaseStats(dex, set);
             default:
                 return null;
         }
@@ -1225,7 +1254,9 @@ function patchMethod(target, key, tag, wrap) {
     // Tier Shift and Bad 'n Boosted change what's shown there.
     function searchListStats(species, mod) {
         if (mod === MOD.BAD_N_BOOSTED) return badNBoostedModifiedStats(species);
+        if (mod === MOD.SCALEMONS) return scalemonsModifiedStats(species);
         if (mod === MOD.TIER_SHIFT) return tierShiftModifiedStats(species) || species.baseStats;
+        
         return species.baseStats;
     }
 
@@ -2772,9 +2803,9 @@ function patchMethod(target, key, tag, wrap) {
 
             const mod = getActiveMod();
 
-            if (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED) {
-                return original.call(this, results, sortCol, reverseSort);
-            }
+            if (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED && mod !== MOD.SCALEMONS) {
+    return original.call(this, results, sortCol, reverseSort);
+}
 
             const order = reverseSort ? -1 : 1;
             const statsFor = (id) => searchListStats(this.dex.species.get(id), mod);
@@ -2865,7 +2896,7 @@ function patchMethod(target, key, tag, wrap) {
                 );
             }
 
-            if (!pokemon || (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED)) {
+            if (!pokemon || (mod !== MOD.TIER_SHIFT && mod !== MOD.BAD_N_BOOSTED && mod !== MOD.SCALEMONS)) {
                 return original.call(
                     this,
                     pokemon,
@@ -2924,25 +2955,28 @@ function patchMethod(target, key, tag, wrap) {
     // ============================================================
 
     function patchBattleStatGuesserGetStat() {
-        const proto = window.BattleStatGuesser?.prototype;
+    const proto = window.BattleStatGuesser?.prototype;
 
-        return patchMethod(proto, 'getStat', '__qolBattlePatched', (original) =>
-                           function (stat, set, evOverride, natureOverride) {
-            const callOriginal = () =>
-            original.call(this, stat, set, evOverride, natureOverride);
+    return patchMethod(proto, 'getStat', '__qolBattlePatched', (original) =>
+                       function (stat, set, evOverride, natureOverride) {
+        const callOriginal = () =>
+        original.call(this, stat, set, evOverride, natureOverride);
 
-            const formatid = String(this.formatid || '').toLowerCase();
-            if (!formatid.includes('tiershift') || !set?.species || !this.dex?.species?.get) {
-                return callOriginal();
-            }
+        const formatid = String(this.formatid || '').toLowerCase();
+        if (!set?.species || !this.dex?.species?.get) return callOriginal();
 
-            const baseStats = tierShiftBaseStats(this.dex, set);
-            if (!baseStats) return callOriginal();
-
-            return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
+        let baseStats = null;
+        if (formatid.includes('tiershift')) {
+            baseStats = tierShiftBaseStats(this.dex, set);
+        } else if (formatid === SCALEMONS_FORMAT) {
+            baseStats = scalemonsBaseStats(this.dex, set);
         }
-                          );
+        if (!baseStats) return callOriginal();
+
+        return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
     }
+                      );
+}
 
     // ============================================================
     // PATCH: in-battle EV/nature optimizer (Godly Gift only)
@@ -3194,6 +3228,17 @@ function patchMethod(target, key, tag, wrap) {
                         );
                     }
                 }
+                
+                // -------------------------
+// Scalemons
+// -------------------------
+if (formatId === SCALEMONS_FORMAT) {
+    const scaled = Object.assign({}, originalSpecies, {
+        baseStats: scalemonsModifiedStats(originalSpecies),
+    });
+
+    return withOverriddenGetSpecies(pokemon, scaled, callOriginal);
+}
 
                 // -------------------------
                 // Mix and Mega
@@ -3348,6 +3393,7 @@ function patchMethod(target, key, tag, wrap) {
         isTierShiftFormat: (room) => getActiveMod(room) === MOD.TIER_SHIFT,
         isMixAndMegaFormat: (room) => getActiveMod(room) === MOD.MIX_AND_MEGA,
         isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED,
+        
         isGodlyGiftFormat,
         isTierShiftAAAFormat,
         requestTSABanlist,
@@ -3355,6 +3401,8 @@ function patchMethod(target, key, tag, wrap) {
         patchBattleStatGuesser: patchBattleStatGuesserGetStat,
         pokemonMatchesEffectiveness,
         getBadNBoostedBaseStats: (set, room) => badNBoostedBaseStats(room?.curTeam?.dex, set),
+        getScalemonsBaseStats: (set) => scalemonsBaseStats(window.room?.curTeam?.dex, set),
+isScalemonsFormat: (room) => getActiveMod(room) === MOD.SCALEMONS,
         isFullyEvolved,
         getCustomToggleMoveIds: (kind, dex) => getCustomToggleMoveIds(dex || window.room?.curTeam?.dex, kind),
         patch: patchEverything,
