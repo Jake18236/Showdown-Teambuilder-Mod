@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.8
+// @version      4.9
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -370,6 +370,7 @@ function installNatureSwapCamomonsListener() {
         // rAF so Showdown commits the value to curSet first.
         if (mod === MOD.NATURE_SWAP && name === 'nature') {
             requestAnimationFrame(() => { room.updateStatForm(); room.updateStatGraph(); });
+            
         } else if (mod === MOD.CAMOMONS && /^move[1-4]$/.test(name)) {
             requestAnimationFrame(() => refreshTypeIcons(room));
         }
@@ -2730,29 +2731,52 @@ function patchAlphabetCupMoveSearch() {
     // PATCH: base stat column + Mix and Mega speed note
     // ============================================================
 
+    function applyModBaseStatColumn(room) {
+    const mod = getActiveMod(room);
+    const set = room?.curSet;
+    if (!mod || !set?.species) return;
+
+    const baseStats = computeModBaseStats(mod, {dex: room.curTeam?.dex, set, room});
+    if (!baseStats) return;
+
+    const rows = room.$chart?.find('.basestatscol > div');
+    if (!rows?.length) return;
+
+    STATS.forEach((stat, i) => rows.eq(i + 1).find('b').text(baseStats[stat]));
+}
+    
     function patchUpdateStatForm() {
-        return patchMethod(window.TeambuilderRoom?.prototype, 'updateStatForm', '__qolPatched', (original) =>
-            function (setGuessed) {
-                const result = original.call(this, setGuessed);
+    return patchMethod(window.TeambuilderRoom?.prototype, 'updateStatForm', '__qolPatched', (original) =>
+        function (setGuessed) {
+            const result = original.call(this, setGuessed);
 
-                const mod = getActiveMod(this);
-                const set = this.curSet;
-                if (!mod || !set?.species) return result;
-
-                const baseStats = computeModBaseStats(mod, {dex: this.curTeam?.dex, set, room: this});
-                if (!baseStats) return result;
-
-                const rows = this.$chart.find('.basestatscol > div');
-                if (!rows.length) return result;
-
-                STATS.forEach((stat, i) => rows.eq(i + 1).find('b').text(baseStats[stat]));
-
-                if (mod === MOD.MIX_AND_MEGA) renderMixAndMegaSpeedNote(this);
-
-                return result;
+            applyModBaseStatColumn(this);
+            if (getActiveMod(this) === MOD.MIX_AND_MEGA && this.curSet?.species) {
+                renderMixAndMegaSpeedNote(this);
             }
-        );
-    }
+            return result;
+        }
+    );
+}
+    
+    function patchStatGraphBaseColumn() {
+    const proto = window.TeambuilderRoom?.prototype;
+    const a = patchMethod(proto, 'updateStatGraph', '__qolStatGraphPatched', (original) =>
+        function (...args) {
+            const result = original.apply(this, args);
+            applyModBaseStatColumn(this);
+            return result;
+        }
+    );
+    const b = patchMethod(proto, 'natureChange', '__qolNatureChangePatched', (original) =>
+        function (...args) {
+            const result = original.apply(this, args);
+            applyModBaseStatColumn(this);
+            return result;
+        }
+    );
+    return a && b;
+}
 
     function patchStatSlide() {
         return patchMethod(window.TeambuilderRoom?.prototype, 'statSlide', '__qolPatched', (original) =>
@@ -2932,7 +2956,8 @@ patchFlatAbilitySearch(),
 
             patchConvergenceMoveSearch(),
             patchConvergenceAbilitySearch(),
-
+            patchUpdateStatForm(),
+            patchStatGraphBaseColumn(),
             patchSearchSort(),
             patchSearchRenderer(),
             patchGetStat(),
