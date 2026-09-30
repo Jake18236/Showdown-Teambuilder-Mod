@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      3.3
+// @version      3.5
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -33,10 +33,12 @@
     BAD_N_BOOSTED: 'badNBoosted',
     GODLY_GIFT: 'godlyGift',
     CROSS_EVOLUTION: 'crossEvolution',
-    SCALEMONS: 'scalemons'
+    SCALEMONS: 'scalemons',
+    FRANTIC_FUSIONS: 'franticFusions',
 };
     
     const SCALEMONS_FORMAT = 'gen9aaaubers';
+    const FRANTIC_FUSIONS_FORMAT = 'gen9franticfusions';
 
     const FORMAT_MOD_MAP = {
     gen9tiershift: MOD.TIER_SHIFT,
@@ -45,6 +47,7 @@
     gen9badnboosted: MOD.BAD_N_BOOSTED,
     gen9crossevolution: MOD.CROSS_EVOLUTION,
     [SCALEMONS_FORMAT]: MOD.SCALEMONS,
+    [FRANTIC_FUSIONS_FORMAT]: MOD.FRANTIC_FUSIONS,
 };
 
     // ============================================================
@@ -697,6 +700,88 @@ function scalemonsBaseStats(dex, set) {
         updateMixAndMegaSpeedNote(room);
         updateMixAndMegaSpeedNotePosition(room);
     }
+    
+    
+    
+    // ============================================================
+// FRANTIC FUSIONS
+// ============================================================
+
+function isFusionMod(mod) {
+    return mod === MOD.CROSS_EVOLUTION || mod === MOD.FRANTIC_FUSIONS;
+}
+
+// Nickname = donor. Any species can fuse with any other (no prevo/NFE rules).
+function resolveFranticFusion(dex, set) {
+    if (!dex || !set?.species || !set?.name) return null;
+
+    const species = dex.species.get(set.species);
+    const donor = dex.species.get(set.name);
+    if (!species?.exists || !donor?.exists) return null;
+    if (species.id === donor.id) return null;
+    if (species.battleOnly || donor.battleOnly) return null;
+
+    return {species, donor};
+}
+
+// +floor(donor / 4) to every stat except HP.
+function franticFusionsBaseStats(dex, set) {
+    const ff = resolveFranticFusion(dex, set);
+    if (!ff) return null;
+
+    const stats = Object.assign({}, ff.species.baseStats);
+    for (const stat of BOOSTABLE_STATS) {
+        stats[stat] += Math.floor(ff.donor.baseStats[stat] / 4);
+    }
+    return stats;
+}
+
+function franticFusionsDonorAbilityIds(dex, set) {
+    const ff = resolveFranticFusion(dex, set);
+    if (!ff) return [];
+    return Object.values(ff.donor.abilities).filter(Boolean).map((a) => toID(a));
+}
+
+// Own abilities stay where they are; the donor's are added as their own section.
+function patchFranticFusionsAbilitySearch() {
+    const proto = window.BattleAbilitySearch?.prototype;
+
+    const a = patchMethod(proto, 'getBaseResults', '__qolFFPatched', (original) =>
+        function () {
+            const results = original.call(this);
+            if (this.format !== 'franticfusions') return results;
+
+            const donorIds = franticFusionsDonorAbilityIds(this.dex, this.set);
+            if (!donorIds.length) return results;
+
+            // End of the first (own-abilities) section.
+            const firstHeader = results.findIndex((r) => r[0] === 'header');
+            let end = results.findIndex((r, i) => i > firstHeader && r[0] === 'header');
+            if (firstHeader < 0 || end < 0) end = results.length;
+
+            const before = results.slice(0, end);
+            const primary = new Set(
+                before.filter((r) => r[0] === 'ability').map((r) => r[1])
+            );
+            const extra = [...new Set(donorIds)].filter((id) => !primary.has(id));
+            if (!extra.length) return results;
+
+            const extraSet = new Set(extra);
+            const after = results
+                .slice(end)
+                .filter((r) => !(r[0] === 'ability' && extraSet.has(r[1])));
+
+            return before.concat(
+    extra.map((id) => ['ability', id]),
+    after
+);
+        }
+    );
+
+    return a && patchCrossEvolutionCacheBust(proto);
+}
+    
+    
 
     // ============================================================
     // CROSS EVOLUTION
@@ -781,7 +866,7 @@ function scalemonsBaseStats(dex, set) {
     function patchCrossEvolutionCacheBust(proto) {
         return patchMethod(proto, 'getResults', '__qolCEKeyPatched', (original) =>
                            function (...args) {
-            if (this.format === 'crossevolution' && this.set) {
+            if ((this.format === 'crossevolution' || this.format === 'franticfusions') && this.set) {
                 const key = [
                     this.set.species || '',
                     this.set.name || '',
@@ -925,10 +1010,10 @@ function scalemonsBaseStats(dex, set) {
         return patchMethod(proto, 'chartSet', '__qolCEIntoPatched', (original) =>
                            function (val, selectNext) {
             const engine =
-                  this.curChartName === 'pokemon' &&
-                  getActiveMod(this) === MOD.CROSS_EVOLUTION
-            ? this.search?.engine
-            : null;
+      this.curChartName === 'pokemon' &&
+      isFusionMod(getActiveMod(this))
+? this.search?.engine
+: null;
 
             const dex = this.curTeam?.dex;
             const intoId = engine ? getIntoFilterId(engine, 'into') : null;
@@ -976,7 +1061,7 @@ function scalemonsBaseStats(dex, set) {
     let ceLastNickname = null;
 
     function refreshCrossEvolutionSet(room, nicknameOverride = null) {
-        if (!room || getActiveMod(room) !== MOD.CROSS_EVOLUTION) return;
+        if (!room ||                 !isFusionMod(getActiveMod(room))) return;
 
         const set = room.curSet;
         const dex = room.curTeam?.dex;
@@ -995,10 +1080,9 @@ function scalemonsBaseStats(dex, set) {
         ? set
         : Object.assign({}, set, {name});
 
-        const types =
-              crossEvolutionTypes(dex, liveSet) ||
-              dex.species.get(set.species)?.types ||
-              [];
+        const types = getActiveMod(room) === MOD.CROSS_EVOLUTION
+    ? (crossEvolutionTypes(dex, liveSet) || dex.species.get(set.species)?.types || [])
+    : (dex.species.get(set.species)?.types || []);
 
         // --------------------------------------------------------
         // Types
@@ -1072,7 +1156,8 @@ function scalemonsBaseStats(dex, set) {
 
             if (
                 getActiveTeambuilderRoom() !== room ||
-                getActiveMod(room) !== MOD.CROSS_EVOLUTION
+                                !isFusionMod(getActiveMod(room))
+
             ) {
                 return;
             }
@@ -1109,7 +1194,7 @@ function scalemonsBaseStats(dex, set) {
 
             if (
                 !room ||
-                getActiveMod(room) !== MOD.CROSS_EVOLUTION
+                   !isFusionMod(getActiveMod(room))
             ) {
                 return;
             }
@@ -1245,6 +1330,8 @@ function scalemonsBaseStats(dex, set) {
                 return crossEvolutionBaseStats(dex, set);
             case MOD.SCALEMONS:
                 return scalemonsBaseStats(dex, set);
+            case MOD.FRANTIC_FUSIONS:
+                return franticFusionsBaseStats(dex, set);
             default:
                 return null;
         }
@@ -1314,37 +1401,39 @@ function scalemonsBaseStats(dex, set) {
     const CUSTOM_TOGGLE_PREFIX = 'is ';
 
     const INTO_PREFIX = 'Into ';
-
+    const FROM_PREFIX = 'From ';
+    
     // Returns the target species if `query` is "into <fully typed species>"
     // and we're in Cross Evolution; otherwise null.
     function parseIntoQuery(engine, query) {
-        if (engine?.typedSearch?.format !== 'crossevolution') return null;
+    const format = engine?.typedSearch?.format;
+    if (format !== 'crossevolution' && format !== 'franticfusions') return null;
 
-        const m = String(query || '').trim().match(/^into\s+(.+)$/i);
-        if (!m) return null;
+    const m = String(query || '').trim().match(/^into\s+(.+)$/i);
+    if (!m) return null;
 
-        const dex = engine.dex || engine.typedSearch?.dex;
-        const species = dex?.species?.get(m[1].trim());
-        if (!species?.exists || species.battleOnly || !species.prevo) return null;
+    const dex = engine.dex || engine.typedSearch?.dex;
+    const species = dex?.species?.get(m[1].trim());
+    if (!species?.exists || species.battleOnly) return null;
+    if (format === 'crossevolution' && !species.prevo) return null;
 
-        return species;
-    }
+    return species;
+}
 
-    const FROM_PREFIX = 'From ';
+function parseFromQuery(engine, query) {
+    const format = engine?.typedSearch?.format;
+    if (format !== 'crossevolution' && format !== 'franticfusions') return null;
 
-    // "<fully typed NFE species> into" -> base species, else null.
-    function parseFromQuery(engine, query) {
-        if (engine?.typedSearch?.format !== 'crossevolution') return null;
+    const m = String(query || '').trim().match(/^(.+?)\s+Into$/i);
+    if (!m) return null;
 
-        const m = String(query || '').trim().match(/^(.+?)\s+Into$/i);
-        if (!m) return null;
+    const dex = engine.dex || engine.typedSearch?.dex;
+    const species = dex?.species?.get(m[1].trim());
+    if (!species?.exists || species.battleOnly) return null;
+    if (format === 'crossevolution' && !isNfe(species)) return null;
 
-        const dex = engine.dex || engine.typedSearch?.dex;
-        const species = dex?.species?.get(m[1].trim());
-        if (!species?.exists || species.battleOnly || !isNfe(species)) return null;
-
-        return species;
-    }
+    return species;
+}
 
     function getIntoFilterId(engine, kind = 'into') {
         for (const list of [engine?.filters, engine?.typedSearch?.filters]) {
@@ -1362,6 +1451,17 @@ function scalemonsBaseStats(dex, set) {
         if (!speciesLike?.name || !target?.exists) return null;
 
         const set = {species: speciesLike.name, name: target.name};
+        
+        if (getActiveMod() === MOD.FRANTIC_FUSIONS) {
+        const ff = resolveFranticFusion(dex, set);
+        if (!ff) return null;
+        return {
+            baseStats: franticFusionsBaseStats(dex, set),
+            types: ff.species.types.slice(),
+            abilities: null, // row keeps its own abilities (see renderer)
+        };
+    }
+        
         const ce = resolveCrossEvolution(dex, set);
         if (!ce) return null;
 
@@ -2859,7 +2959,7 @@ function scalemonsBaseStats(dex, set) {
                     const crossed = Object.assign({}, pokemon, {
                         baseStats: view.baseStats,
                         types: view.types,
-                        abilities: view.abilities,
+                        abilities: view.abilities || pokemon.abilities,
                     });
                     return original.call(this, crossed, matchStart, matchLength, errorMessage, attrs);
                 }
@@ -2872,7 +2972,7 @@ function scalemonsBaseStats(dex, set) {
                     const crossed = Object.assign({}, pokemon, {
                         baseStats: view.baseStats,
                         types: view.types,
-                        abilities: view.abilities,
+                        abilities: view.abilities || pokemon.abilities,
                     });
                     return original.call(this, crossed, matchStart, matchLength, errorMessage, attrs);
                 }
@@ -2969,8 +3069,10 @@ function scalemonsBaseStats(dex, set) {
         if (formatid.includes('tiershift')) {
             baseStats = tierShiftBaseStats(this.dex, set);
         } else if (formatid === SCALEMONS_FORMAT) {
-            baseStats = scalemonsBaseStats(this.dex, set);
-        }
+    baseStats = scalemonsBaseStats(this.dex, set);
+} else if (formatid === FRANTIC_FUSIONS_FORMAT) {
+    baseStats = franticFusionsBaseStats(this.dex, set);
+}
         if (!baseStats) return callOriginal();
 
         return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
@@ -3152,16 +3254,24 @@ function scalemonsBaseStats(dex, set) {
     // PATCH: in-battle hover speed range (Tier Shift / Mix and Mega)
     // ============================================================
 
-    function patchTooltipSpeedRange() {
-    const rooms = window.app?.rooms;
-    if (!rooms) return false;
+function patchTooltipSpeedRange() {
+    const candidates = [];
+
+    if (window.BattleTooltips?.prototype) {
+        candidates.push(window.BattleTooltips.prototype);
+    }
+
+    for (const room of Object.values(window.app?.rooms || {})) {
+        if (room?.tooltips) candidates.push(room.tooltips);
+    }
+
+    if (!candidates.length) return false;
 
     let patchedAny = false;
     const seenProtos = new Set();
 
-    for (const room of Object.values(rooms)) {
-        const tooltips = room?.tooltips;
-        if (!tooltips || typeof tooltips.getSpeedRange !== 'function') {
+    for (const tooltips of candidates) {
+        if (typeof tooltips.getSpeedRange !== 'function') {
             continue;
         }
 
@@ -3228,23 +3338,39 @@ function scalemonsBaseStats(dex, set) {
                         );
                     }
                 }
-                
-                // -------------------------
-// Scalemons
-// -------------------------
-if (formatId === SCALEMONS_FORMAT) {
-    const scaled = Object.assign({}, originalSpecies, {
-        baseStats: scalemonsModifiedStats(originalSpecies),
-    });
 
-    return withOverriddenGetSpecies(pokemon, scaled, callOriginal);
-}
+                // -------------------------
+                // Scalemons
+                // -------------------------
+                if (formatId === SCALEMONS_FORMAT) {
+                    const scaled = Object.assign({}, originalSpecies, {
+                        baseStats: scalemonsModifiedStats(originalSpecies),
+                    });
+
+                    return withOverriddenGetSpecies(pokemon, scaled, callOriginal);
+                }
+
+                // -------------------------
+                // Frantic Fusions
+                // -------------------------
+                if (formatId.includes('franticfusions')) {
+                    const donor = battle.dex?.species?.get(pokemon.name);
+
+                    if (donor?.exists && !donor.battleOnly && donor.id !== originalSpecies.id) {
+                        const shifted = Object.assign({}, originalSpecies, {
+                            baseStats: Object.assign({}, originalSpecies.baseStats, {
+                                spe: originalSpecies.baseStats.spe + Math.floor(donor.baseStats.spe / 4),
+                            }),
+                        });
+
+                        return withOverriddenGetSpecies(pokemon, shifted, callOriginal);
+                    }
+                }
 
                 // -------------------------
                 // Mix and Mega
                 // -------------------------
-                const isMixAndMega =
-                    formatId.includes('mixandmega');
+                const isMixAndMega = formatId.includes('mixandmega');
 
                 if (isMixAndMega && pokemon.item) {
                     const dex = battle.dex;
@@ -3259,11 +3385,7 @@ if (formatId === SCALEMONS_FORMAT) {
                         return callOriginal();
                     }
 
-                    const delta = mixAndMegaStatDelta(
-                        dex,
-                        item,
-                        'spe'
-                    );
+                    const delta = mixAndMegaStatDelta(dex, item, 'spe');
 
                     if (delta) {
                         const shifted = Object.assign({}, originalSpecies, {
@@ -3289,8 +3411,6 @@ if (formatId === SCALEMONS_FORMAT) {
 
     return patchedAny;
 }
-
-    patchTooltipSpeedRange()
     // ============================================================
     // PATCH EVERYTHING
     // ============================================================
@@ -3316,6 +3436,8 @@ if (formatId === SCALEMONS_FORMAT) {
             patchCrossEvolutionAbilitySearch(),
             patchIntoFilterTracker(),
             patchCrossEvolutionIntoSelect(),
+            
+            patchFranticFusionsAbilitySearch(),
 
 
             patchSearchSort(),
@@ -3393,6 +3515,8 @@ if (formatId === SCALEMONS_FORMAT) {
         isTierShiftFormat: (room) => getActiveMod(room) === MOD.TIER_SHIFT,
         isMixAndMegaFormat: (room) => getActiveMod(room) === MOD.MIX_AND_MEGA,
         isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED,
+        
+        getFranticFusionsBaseStats: (set) => franticFusionsBaseStats(window.room?.curTeam?.dex, set),
         
         isGodlyGiftFormat,
         isTierShiftAAAFormat,
