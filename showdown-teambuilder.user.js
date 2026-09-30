@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.3
+// @version      4.6
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -34,6 +34,8 @@
         SCALEMONS: 'scalemons',
         FRANTIC_FUSIONS: 'franticFusions',
         INHERITANCE: 'inheritance',
+        FLIPPED: 'flipped',
+        THREE_FIFTY_CUP: 'threeFiftyCup',
     };
 
     const SCALEMONS_FORMAT = 'gen9aaaubers';
@@ -49,10 +51,14 @@
         [SCALEMONS_FORMAT]: MOD.SCALEMONS,
         [FRANTIC_FUSIONS_FORMAT]: MOD.FRANTIC_FUSIONS,
         [INHERITANCE_FORMAT]: MOD.INHERITANCE,
+        gen9flipped: MOD.FLIPPED,
+        gen9350cup: MOD.THREE_FIFTY_CUP,
     };
 
     // Mods whose stat changes are visible in the Pokémon search list.
-    const SEARCH_LIST_MODS = new Set([MOD.TIER_SHIFT, MOD.BAD_N_BOOSTED, MOD.SCALEMONS]);
+    const SEARCH_LIST_MODS = new Set([
+    MOD.TIER_SHIFT, MOD.BAD_N_BOOSTED, MOD.SCALEMONS, MOD.FLIPPED, MOD.THREE_FIFTY_CUP,
+]);
 
     const EFFECT_LABELS = {weak: 'Weak', resists: 'Resists', neutral: 'Neutral'};
 
@@ -281,7 +287,22 @@
         }
         return stats;
     }
+    // HP/Atk/Def/SpA/SpD/Spe -> Spe/SpD/SpA/Def/Atk/HP
+function flippedModifiedStats(species) {
+    const s = species.baseStats;
+    return {hp: s.spe, atk: s.spd, def: s.spa, spa: s.def, spd: s.atk, spe: s.hp};
+}
 
+// BST <= 350: every stat (HP included) doubled. Null otherwise.
+function threeFiftyCupModifiedStats(species) {
+    if (!species?.baseStats || sumStats(species.baseStats) > 350) return null;
+    const stats = {};
+    for (const stat of STATS) stats[stat] = clamp255(species.baseStats[stat] * 2);
+    return stats;
+}
+
+const flippedBaseStats = speciesStatsFn(flippedModifiedStats);
+const threeFiftyCupBaseStats = speciesStatsFn(threeFiftyCupModifiedStats);
     const tierShiftBaseStats = speciesStatsFn(tierShiftModifiedStats);
     const badNBoostedBaseStats = speciesStatsFn(badNBoostedModifiedStats);
     const scalemonsBaseStats = speciesStatsFn(scalemonsModifiedStats);
@@ -1366,6 +1387,134 @@ if (
         illegal.delete(godId);
         return illegal;
     }
+    
+// ============================================================
+// ALPHABET CUP
+// ============================================================
+
+const ALPHABET_CUP_FORMAT_ID = 'alphabetcup';
+const alphabetCupCache = new WeakMap();
+
+// Per-dex: eligible move ids grouped by first letter, plus a cache of each species' letters.
+function getAlphabetCupCache(dex) {
+    let cache = alphabetCupCache.get(dex);
+    if (cache) return cache;
+
+    cache = {byLetter: new Map(), ids: new Set(), letters: new Map()};
+
+    for (const id of Object.keys(window.BattleMovedex || {})) {
+        const move = dex.moves.get(id);
+        if (!move?.exists || move.id !== id) continue;
+        if (move.isNonstandard || move.isZ || move.isMax || id === 'struggle') continue;
+
+        const letter = move.name.charAt(0).toLowerCase();
+        if (!/[a-z]/.test(letter)) continue;
+
+        cache.ids.add(id);
+        if (!cache.byLetter.has(letter)) cache.byLetter.set(letter, []);
+        cache.byLetter.get(letter).push(id);
+    }
+
+    alphabetCupCache.set(dex, cache);
+    return cache;
+}
+
+// First letter of the species' name and of every pre-evolution's name.
+function alphabetCupLetters(dex, species) {
+    const cache = getAlphabetCupCache(dex);
+    let letters = cache.letters.get(species.id);
+    if (letters) return letters;
+
+    letters = new Set();
+    const seen = new Set();
+    let cur = species;
+
+    while (cur?.exists && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        const ch = cur.name.charAt(0).toLowerCase();
+        if (/[a-z]/.test(ch)) letters.add(ch);
+        cur = cur.prevo ? dex.species.get(cur.prevo) : null;
+    }
+
+    cache.letters.set(species.id, letters);
+    return letters;
+}
+
+function alphabetCupMoveIds(dex, species) {
+    const cache = getAlphabetCupCache(dex);
+    const ids = [];
+    for (const letter of alphabetCupLetters(dex, species)) {
+        ids.push(...(cache.byLetter.get(letter) || []));
+    }
+    return ids;
+}
+
+function alphabetCupCanLearn(dex, species, moveId) {
+    const move = dex.moves.get(moveId);
+    if (!move?.exists || !getAlphabetCupCache(dex).ids.has(move.id)) return false;
+    return alphabetCupLetters(dex, species).has(move.name.charAt(0).toLowerCase());
+}
+
+// Native learnset check OR Alphabet Cup letter rule.
+function pokemonMatchesMove(ctx, original, row, species, moveId) {
+    if (original.call(ctx, row, [['move', moveId]])) return true;
+    return ctx.format === ALPHABET_CUP_FORMAT_ID && alphabetCupCanLearn(ctx.dex, species, moveId);
+}
+
+function patchAlphabetCupMoveSearch() {
+    return patchMethod(
+        window.BattleMoveSearch?.prototype,
+        'getBaseResults',
+        '__qolACMovePatched',
+        (original) => function () {
+            const results = original.call(this);
+            if (this.format !== ALPHABET_CUP_FORMAT_ID || !this.species) return results;
+
+            const species = this.dex.species.get(this.species);
+            if (!species?.exists) return results;
+
+            // Find the native "Moves" and "Usually useless moves" headers.
+            let usableHeader = null;
+            let uselessHeader = null;
+            let lastHeader = null;
+            let seenMove = false;
+
+            for (const r of results) {
+                if (r[0] === 'header') {
+                    lastHeader = r;
+                    const text = String(r[1]);
+                    if (!uselessHeader && /useless/i.test(text) && !/z-move/i.test(text)) uselessHeader = r;
+                } else if (r[0] === 'move' && !seenMove) {
+                    seenMove = true;
+                    usableHeader = lastHeader;
+                }
+            }
+            if (usableHeader && usableHeader === uselessHeader) usableHeader = ['header', 'Moves'];
+
+            // Sort the new moves with the client's own "is this useless" check.
+            const newIds = alphabetCupMoveIds(this.dex, species);
+            const allIds = results.filter((r) => r[0] === 'move').map((r) => r[1]).concat(newIds);
+            const isUsable = (id) => {
+                if (typeof this.moveIsNotUseless !== 'function') return true;
+                try {
+                    return !!this.moveIsNotUseless(id, species, allIds, this.set);
+                } catch (e) {
+                    return true;
+                }
+            };
+
+            const usable = [];
+            const useless = [];
+            for (const id of newIds) (isUsable(id) ? usable : useless).push(['move', id]);
+
+            const extra = [];
+            if (usable.length) extra.push(...(usableHeader ? [usableHeader] : []), ...usable);
+            if (useless.length) extra.push(uselessHeader || ['header', 'Usually useless moves'], ...useless);
+
+            return extra.length ? mergeMoveResults(results, extra) : results;
+        }
+    );
+}
 
     // ============================================================
     // MOD DISPATCH
@@ -1379,6 +1528,8 @@ if (
         [MOD.CROSS_EVOLUTION]: ({dex, set}) => crossEvolutionBaseStats(dex, set),
         [MOD.SCALEMONS]: ({dex, set}) => scalemonsBaseStats(dex, set),
         [MOD.FRANTIC_FUSIONS]: ({dex, set}) => franticFusionsBaseStats(dex, set),
+        [MOD.FLIPPED]: ({dex, set}) => flippedBaseStats(dex, set),
+        [MOD.THREE_FIFTY_CUP]: ({dex, set}) => threeFiftyCupBaseStats(dex, set),
     };
 
     // Fully modified baseStats for whichever mod is active, or null.
@@ -1389,6 +1540,8 @@ if (
         if (mod === MOD.BAD_N_BOOSTED) return badNBoostedModifiedStats(species);
         if (mod === MOD.SCALEMONS) return scalemonsModifiedStats(species);
         if (mod === MOD.TIER_SHIFT) return tierShiftModifiedStats(species) || species.baseStats;
+        if (mod === MOD.FLIPPED) return flippedModifiedStats(species);
+        if (mod === MOD.THREE_FIFTY_CUP) return threeFiftyCupModifiedStats(species) || species.baseStats;
         return species.baseStats;
     }
 
@@ -1616,10 +1769,10 @@ if (
             case 'pivot':
             case 'priority':
                 return getCustomToggleMoveIds(ctx.dex, kind)
-                    .some((moveId) => original.call(ctx, row, [['move', moveId]]));
+                    .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
             case 'removal':
                 return getCustomToggleMoveIds(ctx.dex, kind)
-                    .some((moveId) => original.call(ctx, row, [['move', moveId]]));
+                    .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
             default:
                 return true;
         }
@@ -1974,9 +2127,13 @@ if (
                         matches = !!crossEvolveView(this.dex, this.dex.species.get(target), species.id);
                     } else if (CUSTOM_TOGGLE_FILTERS[type]) {
                         matches = pokemonMatchesCustomToggle(this, original, row, species, type);
-                    } else {
-                        matches = original.call(this, row, [[type, target]]);
-                    }
+                    } else if (CUSTOM_TOGGLE_FILTERS[type]) {
+    matches = pokemonMatchesCustomToggle(this, original, row, species, type);
+} else if (type === 'move') {
+    matches = pokemonMatchesMove(this, original, row, species, target);
+} else {
+    matches = original.call(this, row, [[type, target]]);
+}
 
                     if (negated ? matches : !matches) return false;
                 }
@@ -2471,6 +2628,8 @@ if (
                 let baseStats = null;
                 if (formatid.includes('tiershift')) baseStats = tierShiftBaseStats(this.dex, set);
                 else if (formatid === SCALEMONS_FORMAT) baseStats = scalemonsBaseStats(this.dex, set);
+                else if (formatid === 'gen9flipped') baseStats = flippedBaseStats(this.dex, set);
+                else if (formatid === 'gen9350cup') baseStats = threeFiftyCupBaseStats(this.dex, set);
                 else if (formatid === FRANTIC_FUSIONS_FORMAT) baseStats = franticFusionsBaseStats(this.dex, set);
                 if (!baseStats) return callOriginal();
 
@@ -2701,9 +2860,9 @@ if (
 
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
+            patchAlphabetCupMoveSearch(),
 
 patchInheritanceMoveSearch(),
-patchCrossEvolutionAbilitySearch(),
 patchFlatAbilitySearch(),              
             patchSearchCacheBust(),
             patchIntoFilterTracker(),
