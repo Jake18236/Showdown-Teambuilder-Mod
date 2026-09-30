@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.2
+// @version      4.3
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -1406,10 +1406,10 @@ if (
     const baseFilterType = (type) => (isNegatedFilterType(type) ? type.slice(1) : type);
 
     const ALLOWED_POKEMON_FILTER_TYPES = [
-        'type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
-        'natdex', 'fe', 'recovery', 'pivot', 'priority', 'into', 'from',
-        'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution',
-    ];
+    'type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
+    'natdex', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'into', 'from',
+    'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution',
+];
 
     // Toggle filters take no argument: typing the keyword and picking the
     // single suggestion adds/removes the chip. Value = display label.
@@ -1419,6 +1419,7 @@ if (
         recovery: 'Recovery',
         pivot: 'Pivot',
         priority: 'Priority',
+        removal: 'Removal',
         legendary: 'Legendary',
         boxlegend: 'Box Legends',
         mythical: 'Mythical',
@@ -1561,6 +1562,7 @@ if (
             'roost', 'shoreup', 'slackoff', 'softboiled', 'strengthsap', 'synthesis', 'wish',
         ],
         pivot: ['uturn', 'voltswitch', 'flipturn', 'partingshot', 'chillyreception', 'teleport', 'shedtail'],
+        removal: ['defog', 'rapidspin', 'mortalspin', 'courtchange', 'tidyup'],
     };
 
     // Per-dex cache so we don't rescan the whole movedex per search row.
@@ -1613,6 +1615,9 @@ if (
             case 'recovery':
             case 'pivot':
             case 'priority':
+                return getCustomToggleMoveIds(ctx.dex, kind)
+                    .some((moveId) => original.call(ctx, row, [['move', moveId]]));
+            case 'removal':
                 return getCustomToggleMoveIds(ctx.dex, kind)
                     .some((moveId) => original.call(ctx, row, [['move', moveId]]));
             default:
