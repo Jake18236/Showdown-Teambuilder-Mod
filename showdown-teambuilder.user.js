@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      3.5
+// @version      3.8
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -19,6 +19,7 @@
 
     let pendingSilentTSARequest = false;
     let pendingSilentGGRequest = false;
+    let pendingSilentConvergenceRequest = false;
 
     // ============================================================
     // CONSTANTS
@@ -1209,7 +1210,347 @@
         document.addEventListener('change', handler, true);
     }
 
+    // ============================================================
+    // CONVERGENCE (MY FAVORITE OM)
+    // ============================================================
 
+    const CONVERGENCE_FORMAT_ID = 'convergence';
+    const CONVERGENCE_TYPE_ORDER_MATTERS = false;
+    const CONVERGENCE_EXCLUDED_DONORS = new Set();
+
+    const convergenceIndexCache = new Map();
+    const convergenceMoveCache = new Map();
+    let convergenceBans = {species: new Set(), baseSpecies: new Set(), tiers: new Set(), unbanned: new Set()};
+    let convergenceBanlistLoaded = false;
+    let convergenceRequestSent = false;
+    const CONVERGENCE_TIER_IDS = new Set([
+        'ag', 'uber', 'ou', 'uubl', 'uu', 'rubl', 'ru', 'nubl', 'nu',
+        'publ', 'pu', 'zubl', 'zu', 'nfe', 'lc',
+    ]);
+    function convergenceTypeKey(species) {
+        const types = species.types.slice();
+        if (!CONVERGENCE_TYPE_ORDER_MATTERS) types.sort();
+        return types.join('/');
+    }
+
+    function isConvergenceFormat(room) {
+        const active = room?.curTeam?.format === 'gen9convergence';
+        if (active && !convergenceBanlistLoaded && !convergenceRequestSent) {
+            requestConvergenceBanlist();
+        }
+        return active;
+    }
+
+    function requestConvergenceBanlist() {
+        if (convergenceBanlistLoaded || convergenceRequestSent) return;
+        if (!window.app || typeof app.send !== 'function') return;
+
+        convergenceRequestSent = true;
+        pendingSilentConvergenceRequest = true;
+        app.send('/tier convergence');
+    }
+
+    function parseFormatSectionTokens(html, header) {
+        if (!html || !html.includes(header)) return null;
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+        const text = doc.body.textContent || '';
+
+        const re = /(^|[^A-Za-z])(Bans|Unbans|Restricted|Restrictions|Unrestricted|Ruleset|Rules|Custom Rules)\s+-\s+/g;
+        const marks = [];
+        let m;
+        while ((m = re.exec(text))) {
+            marks.push({
+                label: m[2],
+                labelStart: m.index + m[1].length,
+                bodyStart: m.index + m[0].length,
+            });
+        }
+
+        const sections = {};
+        marks.forEach((mark, i) => {
+            const end = i + 1 < marks.length ? marks[i + 1].labelStart : text.length;
+            const tokens = text.slice(mark.bodyStart, end).split(',').map((t) => t.trim()).filter(Boolean);
+            sections[mark.label] = (sections[mark.label] || []).concat(tokens);
+        });
+
+        return sections;
+    }
+
+    function parseConvergenceBanlist(html) {
+        const sections = parseFormatSectionTokens(html, '[Gen 9] Convergence');
+        if (!sections) return false;
+
+        const next = {species: new Set(), baseSpecies: new Set(), tiers: new Set(), unbanned: new Set()};
+        const unresolved = [];
+
+        for (const token of sections.Bans || []) {
+            const id = toID(token);
+            if (CONVERGENCE_TIER_IDS.has(id)) {
+                next.tiers.add(id);
+                continue;
+            }
+            const sp = Dex.species.get(token);
+            if (sp?.exists) {
+                // A base-species ban covers every forme; a forme ban only that forme.
+                (sp.name === (sp.baseSpecies || sp.name) ? next.baseSpecies : next.species).add(sp.id);
+            } else {
+                unresolved.push(token);
+            }
+        }
+
+        for (const token of sections.Unbans || []) {
+            const sp = Dex.species.get(token);
+            if (sp?.exists) next.unbanned.add(sp.id);
+        }
+
+        convergenceBans = next;
+        convergenceBanlistLoaded = true;
+        convergenceIndexCache.clear();
+        convergenceMoveCache.clear();
+
+        console.log(LOG, 'Loaded Convergence bans:', {
+            species: [...next.species],
+            baseSpecies: [...next.baseSpecies],
+            tiers: [...next.tiers],
+            unbanned: [...next.unbanned],
+            unresolved,
+        });
+
+        refreshConvergenceSearch();
+        return true;
+    }
+
+    function isConvergenceBanned(sp) {
+        const b = convergenceBans;
+        if (b.unbanned.has(sp.id)) return false;
+        if (b.species.has(sp.id)) return true;
+        if (b.baseSpecies.has(toID(sp.baseSpecies || sp.name))) return true;
+        return !!sp.tier && b.tiers.has(toID(sp.tier));
+    }
+
+    // Rebuild the open search once the banlist arrives.
+    function refreshConvergenceSearch() {
+        const room = getTeambuilderRoom();
+        const engine = room?.search?.engine;
+        const typed = engine?.typedSearch;
+        if (typed?.format !== CONVERGENCE_FORMAT_ID) return;
+
+        typed.baseResults = null;
+        typed.baseIllegalResults = null;
+        engine.results = null;
+
+        const ui = room.search;
+        if (typeof ui.update === 'function') ui.update();
+        else if (typeof ui.updateResults === 'function') ui.updateResults();
+    }
+
+    function getConvergenceGroup(dex, species) {
+        let index = convergenceIndexCache.get(dex.gen);
+
+        if (!index) {
+            index = new Map();
+
+            for (const id of Object.keys(window.BattlePokedex || {})) {
+                const sp = dex.species.get(id);
+                if (!sp?.exists || sp.id !== id) continue;
+                if (sp.battleOnly || sp.isNonstandard) continue;
+                if (CONVERGENCE_EXCLUDED_DONORS.has(sp.id)) continue;
+                if (isConvergenceBanned(sp)) continue;
+
+                const key = convergenceTypeKey(sp);
+                if (!index.has(key)) index.set(key, []);
+                index.get(key).push(sp);
+            }
+
+            for (const list of index.values()) {
+                list.sort((a, b) => a.name.localeCompare(b.name));
+            }
+
+            convergenceIndexCache.set(dex.gen, index);
+        }
+
+        return index.get(convergenceTypeKey(species)) || [];
+    }
+
+    function getConvergenceMoveMap(search, original, species) {
+        const key = `${search.dex.gen}|${convergenceTypeKey(species)}`;
+        let map = convergenceMoveCache.get(key);
+        if (map) return map;
+
+        map = new Map();
+
+        for (const member of getConvergenceGroup(search.dex, species)) {
+            const rows = withSearchSpecies(search, member.name, () => original.call(search));
+            let header = null;
+
+            for (const row of rows) {
+                if (row[0] === 'header') { header = row; continue; }
+                if (row[0] !== 'move' || map.has(row[1])) continue;
+                map.set(row[1], {donorId: member.id, header});
+            }
+        }
+
+        convergenceMoveCache.set(key, map);
+        return map;
+    }
+
+    function patchConvergenceMoveSearch() {
+        const proto = window.BattleMoveSearch?.prototype;
+
+        return patchMethod(proto, 'getBaseResults', '__qolConvMovePatched', (original) =>
+                           function () {
+            const results = original.call(this);
+            if (this.format !== CONVERGENCE_FORMAT_ID || !this.species) return results;
+
+            if (!convergenceBanlistLoaded) {
+                requestConvergenceBanlist();
+                return results;
+            }
+
+            const species = this.dex.species.get(this.species);
+            if (!species?.exists) return results;
+
+            const map = getConvergenceMoveMap(this, original, species);
+            const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
+            const donors = {};
+            const extra = [];
+            let lastHeader = null;
+
+            for (const [moveId, info] of map) {
+                if (have.has(moveId)) continue;
+
+                if (info.header !== lastHeader) {
+                    extra.push(info.header);
+                    lastHeader = info.header;
+                }
+                extra.push(['move', moveId]);
+                donors[moveId] = info.donorId;
+            }
+
+            this.__qolConvDonors = donors;
+            return extra.length ? mergeMoveResults(results, extra) : results;
+        }
+                          );
+    }
+
+    // Everything (incl. hidden/special) goes under one "Abilities" header.
+    function patchConvergenceAbilitySearch() {
+        const proto = window.BattleAbilitySearch?.prototype;
+
+        return patchMethod(proto, 'getBaseResults', '__qolConvAbilityPatched', (original) =>
+                           function () {
+            const results = original.call(this);
+            if (this.format !== CONVERGENCE_FORMAT_ID || !this.species) return results;
+
+            if (!convergenceBanlistLoaded) {
+                requestConvergenceBanlist();
+                return results;
+            }
+
+            const species = this.dex.species.get(this.species);
+            if (!species?.exists) return results;
+
+            const notes = results.filter((r) => r[0] === 'html');
+            const own = results.filter((r) => r[0] === 'ability');
+            if (!own.length) return results;
+
+            const seen = new Set(own.map((r) => r[1]));
+            const donors = {};
+            const extra = [];
+
+            for (const member of getConvergenceGroup(this.dex, species)) {
+                if (member.id === species.id) continue;
+
+                for (const name of Object.values(member.abilities)) {
+                    const id = toID(name);
+                    if (!id || seen.has(id)) continue;
+
+                    seen.add(id);
+                    donors[id] = member.id;
+                    extra.push(['ability', id]);
+                }
+            }
+
+            extra.sort((a, b) => a[1].localeCompare(b[1]));
+            this.__qolConvDonors = donors;
+
+            return [...notes, ['header', 'Abilities'], ...own, ...extra];
+        }
+                          );
+    }
+
+    // Donor icon at the end of the row. Absolutely positioned so it doesn't
+    // disturb the row's column layout, and pointer-events:none so clicks
+    // still hit the result underneath.
+    let convergenceIconObserverInstalled = false;
+
+    function decorateConvergenceRows() {
+        const typed = getTeambuilderRoom()?.search?.engine?.typedSearch;
+        const type = typed?.searchType;
+        const donors = typed?.__qolConvDonors;
+
+        if (
+            typed?.format !== CONVERGENCE_FORMAT_ID ||
+            (type !== 'move' && type !== 'ability') ||
+            !donors
+        ) {
+            return;
+        }
+
+        for (const a of document.querySelectorAll(`li.result > a[data-entry^="${type}|"]`)) {
+            const li = a.parentElement;
+            if (li.querySelector(':scope > .qol-donor')) continue;
+
+            const name = a.getAttribute('data-entry').slice(type.length + 1);
+            const donorId = donors[toID(name)];
+            if (!donorId) continue;
+
+            const donor = typed.dex.species.get(donorId);
+            const badge = document.createElement('span');
+
+            badge.className = 'qol-donor';
+            badge.title = `Shared by ${donor?.name || donorId}`;
+            badge.style.cssText =
+                'position:absolute;right:4px;top:50%;margin-top:-15px;' +
+                'pointer-events:none;transform:scale(.8);transform-origin:right center;';
+            badge.innerHTML = pokemonIconHtml(donorId);
+
+            li.style.position = 'relative';
+            li.appendChild(badge);
+        }
+    }
+
+    function installConvergenceDonorIcons() {
+        if (convergenceIconObserverInstalled) return;
+        convergenceIconObserverInstalled = true;
+
+        let scheduled = false;
+
+        // Script runs at document-start, so observe documentElement (body may not exist yet).
+        new MutationObserver(() => {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                try {
+                    decorateConvergenceRows();
+                } catch (e) {
+                    console.error(LOG, 'Convergence icons failed:', e);
+                }
+            });
+        }).observe(document.documentElement, {childList: true, subtree: true});
+    }
+
+    function pokemonIconHtml(speciesId) {
+        const icon = Dex.getPokemonIcon(speciesId);
+        if (typeof icon !== 'string') return '';
+        // Some client versions return a full <span>, others just the CSS.
+        return icon.trim().startsWith('<')
+            ? icon
+        : `<span class="picon" style="${icon}"></span>`;
+    }
 
     // ============================================================
     // GODLY GIFT
@@ -1975,6 +2316,14 @@
                             parseGodlyGiftRestricted(match[1]);
                             if (pendingSilentGGRequest) {
                                 pendingSilentGGRequest = false;
+                                suppress = true;
+                            }
+                        }
+
+                        if (line.includes('[Gen 9] Convergence')) {
+                            parseConvergenceBanlist(match[1]);
+                            if (pendingSilentConvergenceRequest) {
+                                pendingSilentConvergenceRequest = false;
                                 suppress = true;
                             }
                         }
@@ -3485,6 +3834,10 @@
 
             patchFranticFusionsAbilitySearch(),
 
+            patchConvergenceMoveSearch(),
+            patchConvergenceAbilitySearch(),
+
+
 
             patchSearchSort(),
             patchSearchRenderer(),
@@ -3498,21 +3851,16 @@
             patchMixAndMegaAbilityPreview(),
             patchTooltipSpeedRange(),
         ];
-
-        // Proactively fetch these two server-side banlists as soon as the
-        // format is detected, so they're ready before the user opens the
-        // search. This deliberately uses window.room (the room actually on
-        // screen right now) rather than the persistent teambuilder room
-        // reference — app.send() posts to whatever room is currently
-        // focused, and app.rooms.teambuilder can still exist in the
-        // background after the user has switched to another room/PM, which
-        // would otherwise leak the /tier command into whatever's focused.
         if (isGodlyGiftFormat(window.room)) {
             requestGGBanlist();
         }
         if (isTierShiftAAAFormat(window.room)) {
             requestTSABanlist();
         }
+        if (isConvergenceFormat(window.room)) {
+            requestConvergenceBanlist();
+        }
+
 
         return results.every(Boolean);
     }
@@ -3568,6 +3916,7 @@
         isTierShiftAAAFormat,
         requestTSABanlist,
         requestGGBanlist,
+        requestConvergenceBanlist,
         patchBattleStatGuesser: patchBattleStatGuesserGetStat,
         pokemonMatchesEffectiveness,
         getBadNBoostedBaseStats: (set, room) => badNBoostedBaseStats(room?.curTeam?.dex, set),
@@ -3578,4 +3927,5 @@
         patch: patchEverything,
     };
     installCrossEvolutionNicknameListener();
+    installConvergenceDonorIcons();
 })();
