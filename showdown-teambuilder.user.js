@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.0
+// @version      4.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -33,10 +33,12 @@
         CROSS_EVOLUTION: 'crossEvolution',
         SCALEMONS: 'scalemons',
         FRANTIC_FUSIONS: 'franticFusions',
+        INHERITANCE: 'inheritance',
     };
 
     const SCALEMONS_FORMAT = 'gen9aaaubers';
     const FRANTIC_FUSIONS_FORMAT = 'gen9franticfusions';
+    const INHERITANCE_FORMAT = 'gen9inheritance';
 
     const FORMAT_MOD_MAP = {
         gen9tiershift: MOD.TIER_SHIFT,
@@ -46,6 +48,7 @@
         gen9crossevolution: MOD.CROSS_EVOLUTION,
         [SCALEMONS_FORMAT]: MOD.SCALEMONS,
         [FRANTIC_FUSIONS_FORMAT]: MOD.FRANTIC_FUSIONS,
+        [INHERITANCE_FORMAT]: MOD.INHERITANCE,
     };
 
     // Mods whose stat changes are visible in the Pokémon search list.
@@ -102,6 +105,7 @@
     const isGodlyGiftFormat = (room) => formatActive(room, 'gen9godlygift', 'gg');
     const isTierShiftAAAFormat = (room) => formatActive(room, 'gen9tiershiftaaa', 'tsa');
     const isConvergenceFormat = (room) => formatActive(room, 'gen9convergence', 'conv');
+    
 
     function getActiveMod(room = getActiveTeambuilderRoom()) {
         if (isGodlyGiftFormat(room)) return MOD.GODLY_GIFT;
@@ -498,7 +502,7 @@
     // FRANTIC FUSIONS
     // ============================================================
 
-    const isFusionMod = (mod) => mod === MOD.CROSS_EVOLUTION || mod === MOD.FRANTIC_FUSIONS;
+    const isFusionMod = (mod) => mod === MOD.CROSS_EVOLUTION || mod === MOD.FRANTIC_FUSIONS || mod === MOD.INHERITANCE;
 
     // Nickname = donor. Any species can fuse with any other (no prevo/NFE rules).
     function resolveFranticFusion(dex, set) {
@@ -529,38 +533,62 @@
         return ff ? Object.values(ff.donor.abilities).filter(Boolean).map((a) => toID(a)) : [];
     }
 
+    // Nickname = donor. Same validity rules as Frantic Fusions; no stat changes.
+const resolveInheritance = (dex, set) => resolveFranticFusion(dex, set);
     // Own abilities stay where they are; the donor's are added right after them.
-    function patchFranticFusionsAbilitySearch() {
-        return patchMethod(
-            window.BattleAbilitySearch?.prototype,
-            'getBaseResults',
-            '__qolFFPatched',
-            (original) => function () {
-                const results = original.call(this);
-                if (this.format !== 'franticfusions') return results;
+    // One flat "Abilities" list (hidden/special included), no sub-headers.
+function flattenAbilityResults(results, extraIds = []) {
+    const notes = results.filter((r) => r[0] === 'html');
+    const seen = new Set();
+    const abilities = [];
 
-                const donorIds = franticFusionsDonorAbilityIds(this.dex, this.set);
-                if (!donorIds.length) return results;
-
-                // End of the first (own-abilities) section.
-                const firstHeader = results.findIndex((r) => r[0] === 'header');
-                let end = results.findIndex((r, i) => i > firstHeader && r[0] === 'header');
-                if (firstHeader < 0 || end < 0) end = results.length;
-
-                const before = results.slice(0, end);
-                const primary = new Set(before.filter((r) => r[0] === 'ability').map((r) => r[1]));
-                const extra = [...new Set(donorIds)].filter((id) => !primary.has(id));
-                if (!extra.length) return results;
-
-                const extraSet = new Set(extra);
-                const after = results
-                    .slice(end)
-                    .filter((r) => !(r[0] === 'ability' && extraSet.has(r[1])));
-
-                return before.concat(extra.map((id) => ['ability', id]), after);
-            }
-        );
+    for (const r of results) {
+        if (r[0] !== 'ability' || seen.has(r[1])) continue;
+        seen.add(r[1]);
+        abilities.push(r);
     }
+    for (const id of extraIds) {
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        abilities.push(['ability', id]);
+    }
+
+    return [...notes, ['header', 'Abilities'], ...abilities];
+}
+
+// Frantic Fusions: own abilities + donor's. Inheritance: donor's abilities only.
+function patchFlatAbilitySearch() {
+    return patchMethod(
+        window.BattleAbilitySearch?.prototype,
+        'getBaseResults',
+        '__qolFlatAbilityPatched',
+        (original) => function () {
+            const isFF = this.format === 'franticfusions';
+            const isInh = this.format === 'inheritance';
+            if (!isFF && !isInh) return original.call(this);
+
+            let results;
+            let extraIds = [];
+
+            if (isInh) {
+                const inh = resolveInheritance(this.dex, this.set);
+                results = inh
+                    ? withSpeciesOverrides(
+                        this.dex,
+                        inh.species,
+                        {abilities: Object.assign({}, inh.donor.abilities)},
+                        () => original.call(this)
+                    )
+                    : original.call(this);
+            } else {
+                results = original.call(this);
+                extraIds = franticFusionsDonorAbilityIds(this.dex, this.set);
+            }
+
+            return this.species ? flattenAbilityResults(results, extraIds) : results;
+        }
+    );
+}
 
     // ============================================================
     // CROSS EVOLUTION
@@ -621,7 +649,7 @@
         const bust = (proto) =>
             patchMethod(proto, 'getResults', '__qolCEKeyPatched', (original) =>
                 function (...args) {
-                    if ((this.format === 'crossevolution' || this.format === 'franticfusions') && this.set) {
+                    if (isCrossFormat(this.format) && this.set) {
                         const key = [this.set.species || '', this.set.name || '', this.species || ''].join('|');
 
                         if (this.__qolCEKey !== key) {
@@ -715,44 +743,84 @@
     }
 
     function patchCrossEvolutionMoveSearch() {
-        return patchMethod(
-            window.BattleMoveSearch?.prototype,
-            'getBaseResults',
-            '__qolCEPatched',
-            (original) => function () {
-                const results = original.call(this);
-                if (this.format !== 'crossevolution') return results;
+    return patchMethod(
+        window.BattleMoveSearch?.prototype,
+        'getBaseResults',
+        '__qolCEPatched',
+        (original) => function () {
+            const results = original.call(this);
+            if (this.format !== 'crossevolution') return results;
 
-                const ce = resolveCrossEvolution(this.dex, this.set);
-                if (!ce) return results;
+            this.__qolConvDonors = {};
 
-                const crossResults = withSearchSpecies(this, ce.cross.name, () => original.call(this));
-                return mergeMoveResults(results, crossResults);
+            const ce = resolveCrossEvolution(this.dex, this.set);
+            if (!ce) return results;
+
+            const crossResults = withSearchSpecies(this, ce.cross.name, () => original.call(this));
+
+            // Moves that only exist because of the cross evolution get the target's icon.
+            const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
+            const donors = {};
+            for (const r of crossResults) {
+                if (r[0] === 'move' && !have.has(r[1])) donors[r[1]] = ce.cross.id;
             }
-        );
-    }
+            this.__qolConvDonors = donors;
+
+            return mergeMoveResults(results, crossResults);
+        }
+    );
+}
+    
+    // Inheritance: the donor's movepool fully replaces the mon's own.
+function patchInheritanceMoveSearch() {
+    return patchMethod(
+        window.BattleMoveSearch?.prototype,
+        'getBaseResults',
+        '__qolInheritMovePatched',
+        (original) => function () {
+            if (this.format !== 'inheritance') return original.call(this);
+
+            const inh = resolveInheritance(this.dex, this.set);
+            if (!inh) return original.call(this);
+
+            return withSearchSpecies(this, inh.donor.name, () => original.call(this));
+        }
+    );
+}
 
     // Abilities: show the target's abilities in the ability picker.
     function patchCrossEvolutionAbilitySearch() {
-        return patchMethod(
-            window.BattleAbilitySearch?.prototype,
-            'getBaseResults',
-            '__qolCEPatched',
-            (original) => function () {
-                if (this.format !== 'crossevolution') return original.call(this);
+    return patchMethod(
+        window.BattleAbilitySearch?.prototype,
+        'getBaseResults',
+        '__qolCEPatched',
+        (original) => function () {
+            if (this.format !== 'crossevolution') return original.call(this);
 
-                const ce = resolveCrossEvolution(this.dex, this.set);
-                if (!ce) return original.call(this);
+            this.__qolConvDonors = {};
 
-                return withSpeciesOverrides(
-                    this.dex,
-                    ce.species,
-                    {abilities: Object.assign({}, ce.cross.abilities)},
-                    () => original.call(this)
-                );
+            const ce = resolveCrossEvolution(this.dex, this.set);
+            if (!ce) return original.call(this);
+
+            const results = withSpeciesOverrides(
+                this.dex,
+                ce.species,
+                {abilities: Object.assign({}, ce.cross.abilities)},
+                () => original.call(this)
+            );
+
+            // Only abilities the base species doesn't already have get the icon.
+            const own = new Set(Object.values(ce.species.abilities).filter(Boolean).map((a) => toID(a)));
+            const donors = {};
+            for (const r of results) {
+                if (r[0] === 'ability' && !own.has(r[1])) donors[r[1]] = ce.cross.id;
             }
-        );
-    }
+            this.__qolConvDonors = donors;
+
+            return results;
+        }
+    );
+}
 
     let ceRefreshFrame = null;
     let ceLastNickname = null;
@@ -1159,9 +1227,14 @@
         const type = typed?.searchType;
         const donors = typed?.__qolConvDonors;
 
-        if (typed?.format !== CONVERGENCE_FORMAT_ID || (type !== 'move' && type !== 'ability') || !donors) {
-            return;
-        }
+        const format = typed?.format;
+if (
+    (format !== CONVERGENCE_FORMAT_ID && format !== 'crossevolution') ||
+    (type !== 'move' && type !== 'ability') ||
+    !donors
+) {
+    return;
+}
 
         for (const a of document.querySelectorAll(`li.result > a[data-entry^="${type}|"]`)) {
             const li = a.parentElement;
@@ -1358,7 +1431,7 @@
     const INTO_PREFIX = 'Into ';
     const FROM_PREFIX = 'From ';
 
-    const isCrossFormat = (format) => format === 'crossevolution' || format === 'franticfusions';
+    const isCrossFormat = (format) => format === 'crossevolution' || format === 'franticfusions' || format === 'inheritance';
 
     // "into <species>" -> target species (Cross Evolution / Frantic Fusions only).
     function parseIntoQuery(engine, query) {
@@ -1406,6 +1479,16 @@
         if (!speciesLike?.name || !target?.exists) return null;
 
         const set = {species: speciesLike.name, name: target.name};
+        
+        if (getActiveMod() === MOD.INHERITANCE) {
+    const inh = resolveInheritance(dex, set);
+    if (!inh) return null;
+    return {
+        baseStats: Object.assign({}, inh.species.baseStats),
+        types: inh.species.types.slice(),
+        abilities: Object.assign({}, inh.donor.abilities),
+    };
+}
 
         if (getActiveMod() === MOD.FRANTIC_FUSIONS) {
             const ff = resolveFranticFusion(dex, set);
@@ -2613,7 +2696,10 @@
 
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
-            patchFranticFusionsAbilitySearch(),
+
+patchInheritanceMoveSearch(),
+patchCrossEvolutionAbilitySearch(),
+patchFlatAbilitySearch(),              
             patchSearchCacheBust(),
             patchIntoFilterTracker(),
             patchCrossEvolutionIntoSelect(),
