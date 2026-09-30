@@ -14,6 +14,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Priority
 - Natdex (its actually just PH legality though)
 - Negate command "!" that works for all filters (eg !fire, !weak ice, !FE)
+- Legendary, Mythical, Paradox, and also Eeveelution
 
 **For Tier Shift:**
 - Automatically applies Tier Shift's base-stat boosts.
@@ -54,6 +55,21 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Turns gen9aaaubers into Scalemons
 - Displays all stats scaled
 - Speed Tooltips
+
+**For Flipped**
+- Applies flipped base stats (HP/Atk/Def/SpA/SpD/Spe → Spe/SpD/SpA/Def/Atk/HP) in base stats, real stats, visuals, and search.
+- Speed tooltips
+
+**For 350 Cup**
+- Doubles all base stats (HP included) of Pokémon with BST ≤ 350 in base stats, real stats, visuals, and search.
+- Speed tooltips
+
+**For Convergence**
+- Shows all added moves and abilities
+- Icons for who added them
+
+**For Alphabet Cup**
+- Gives all moves naturally and allows search
 
 
 ## Installation for Chrome, Firefox, Edge
