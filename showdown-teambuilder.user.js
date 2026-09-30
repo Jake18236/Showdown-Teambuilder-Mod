@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.6
+// @version      4.8
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -36,6 +36,8 @@
         INHERITANCE: 'inheritance',
         FLIPPED: 'flipped',
         THREE_FIFTY_CUP: 'threeFiftyCup',
+        NATURE_SWAP: 'natureSwap',
+        CAMOMONS: 'camomons',
     };
 
     const SCALEMONS_FORMAT = 'gen9aaaubers';
@@ -53,6 +55,8 @@
         [INHERITANCE_FORMAT]: MOD.INHERITANCE,
         gen9flipped: MOD.FLIPPED,
         gen9350cup: MOD.THREE_FIFTY_CUP,
+        gen9natureswap: MOD.NATURE_SWAP,
+        gen9camomons: MOD.CAMOMONS,
     };
 
     // Mods whose stat changes are visible in the Pokémon search list.
@@ -306,6 +310,71 @@ const threeFiftyCupBaseStats = speciesStatsFn(threeFiftyCupModifiedStats);
     const tierShiftBaseStats = speciesStatsFn(tierShiftModifiedStats);
     const badNBoostedBaseStats = speciesStatsFn(badNBoostedModifiedStats);
     const scalemonsBaseStats = speciesStatsFn(scalemonsModifiedStats);
+    
+    // ============================================================
+// NATURE SWAP / CAMOMONS
+// ============================================================
+
+// The +stat and -stat base stats trade places. Neutral natures: no change.
+function natureSwapBaseStats(dex, set) {
+    const species = dex?.species?.get(set?.species);
+    const nature = BattleNatures[set?.nature];
+    if (!species?.exists || !nature?.plus || !nature?.minus) return null;
+
+    const stats = Object.assign({}, species.baseStats);
+    [stats[nature.plus], stats[nature.minus]] = [stats[nature.minus], stats[nature.plus]];
+    return stats;
+}
+
+// Types come from moves 1 and 2 (blank until a move is set).
+function camomonsTypes(dex, set) {
+    if (!dex || !set) return [];
+    const typeOf = (id) => {
+        if (!id) return null;
+        const move = dex.moves.get(id);
+        return move?.exists ? move.type : null;
+    };
+    const t1 = typeOf(set.moves?.[0]);
+    const t2 = typeOf(set.moves?.[1]);
+    return [...new Set([t1, t2].filter(Boolean))]; // same type -> mono
+}
+
+function modifiedTypes(mod, dex, set) {
+    if (mod === MOD.MIX_AND_MEGA) return mixAndMegaModifiedTypes(dex, set);
+    if (mod === MOD.CROSS_EVOLUTION) return crossEvolutionTypes(dex, set);
+    if (mod === MOD.CAMOMONS) return camomonsTypes(dex, set);
+    return null;
+}
+
+function refreshTypeIcons(room) {
+    const dex = room?.curTeam?.dex;
+    const set = room?.curSet;
+    const cell = room?.$?.('.setcell-typeicons');
+    if (!dex || !set?.species || !cell?.length) return;
+
+    const types = modifiedTypes(getActiveMod(room), dex, set) || dex.species.get(set.species)?.types || [];
+    cell.html(types.map((t) => Dex.getTypeIcon(t)).join(''));
+}
+
+let nsCamoListenerInstalled = false;
+function installNatureSwapCamomonsListener() {
+    if (nsCamoListenerInstalled) return;
+    nsCamoListenerInstalled = true;
+
+    document.addEventListener('change', (e) => {
+        const name = e.target?.getAttribute?.('name') || '';
+        const room = getActiveTeambuilderRoom();
+        if (!room) return;
+        const mod = getActiveMod(room);
+
+        // rAF so Showdown commits the value to curSet first.
+        if (mod === MOD.NATURE_SWAP && name === 'nature') {
+            requestAnimationFrame(() => { room.updateStatForm(); room.updateStatGraph(); });
+        } else if (mod === MOD.CAMOMONS && /^move[1-4]$/.test(name)) {
+            requestAnimationFrame(() => refreshTypeIcons(room));
+        }
+    }, true);
+}
 
     // ============================================================
     // MIX AND MEGA
@@ -1530,6 +1599,7 @@ function patchAlphabetCupMoveSearch() {
         [MOD.FRANTIC_FUSIONS]: ({dex, set}) => franticFusionsBaseStats(dex, set),
         [MOD.FLIPPED]: ({dex, set}) => flippedBaseStats(dex, set),
         [MOD.THREE_FIFTY_CUP]: ({dex, set}) => threeFiftyCupBaseStats(dex, set),
+        [MOD.NATURE_SWAP]: ({dex, set}) => natureSwapBaseStats(dex, set),
     };
 
     // Fully modified baseStats for whichever mod is active, or null.
@@ -2631,6 +2701,7 @@ function patchAlphabetCupMoveSearch() {
                 else if (formatid === 'gen9flipped') baseStats = flippedBaseStats(this.dex, set);
                 else if (formatid === 'gen9350cup') baseStats = threeFiftyCupBaseStats(this.dex, set);
                 else if (formatid === FRANTIC_FUSIONS_FORMAT) baseStats = franticFusionsBaseStats(this.dex, set);
+                else if (formatid === 'gen9natureswap') baseStats = natureSwapBaseStats(this.dex, set);
                 if (!baseStats) return callOriginal();
 
                 return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
@@ -2703,47 +2774,38 @@ function patchAlphabetCupMoveSearch() {
     function patchRenderSetTypeIcons() {
         return patchMethod(window.TeambuilderRoom?.prototype, 'renderSet', '__qolMixAndMegaPatched', (original) =>
             function (set, i) {
-                const html = original.call(this, set, i);
+    const html = original.call(this, set, i);
+    if (!set?.species) return html;
 
-                const mod = getActiveMod(this);
-                if ((mod !== MOD.MIX_AND_MEGA && mod !== MOD.CROSS_EVOLUTION) || !set?.species) return html;
+    const types = modifiedTypes(getActiveMod(this), this.curTeam?.dex, set);
+    if (!types) return html;
 
-                const dex = this.curTeam?.dex;
-                const types = mod === MOD.CROSS_EVOLUTION
-                    ? crossEvolutionTypes(dex, set)
-                    : mixAndMegaModifiedTypes(dex, set);
-                if (!types) return html;
-
-                return html.replace(
-                    /(<div class="setcell setcell-typeicons">)[\s\S]*?(<\/div>)/,
-                    `$1${types.map((t) => Dex.getTypeIcon(t)).join('')}$2`
-                );
-            }
+    return html.replace(
+        /(<div class="setcell setcell-typeicons">)[\s\S]*?(<\/div>)/,
+        `$1${types.map((t) => Dex.getTypeIcon(t)).join('')}$2`
+    );
+}
         );
     }
 
     // Live-updates the type icon cell when the item changes (chartSet's own
     // 'item' case only refreshes the sprite/item icon).
     function patchChartSetMixAndMegaTypes() {
-        return patchMethod(window.TeambuilderRoom?.prototype, 'chartSet', '__qolMixAndMegaPatched', (original) =>
-            function (val, selectNext) {
-                const inputName = this.curChartName;
-                const result = original.call(this, val, selectNext);
+    return patchMethod(window.TeambuilderRoom?.prototype, 'chartSet', '__qolMixAndMegaPatched', (original) =>
+        function (val, selectNext) {
+            const inputName = this.curChartName;
+            const result = original.call(this, val, selectNext);
 
-                if (inputName !== 'item' || getActiveMod(this) !== MOD.MIX_AND_MEGA) return result;
-
-                const dex = this.curTeam?.dex;
-                const set = this.curSet;
-                const cell = this.$('.setcell-typeicons');
-                if (!dex || !set?.species || !cell.length) return result;
-
-                const types = mixAndMegaModifiedTypes(dex, set) || dex.species.get(set.species)?.types || [];
-                cell.html(types.map((t) => Dex.getTypeIcon(t)).join(''));
-
-                return result;
+            const mod = getActiveMod(this);
+            // Camomons: refresh on any pick (species pick blanks the icons,
+            // move picks fill them). Mix and Mega: only on item.
+            if (mod === MOD.CAMOMONS || (mod === MOD.MIX_AND_MEGA && inputName === 'item')) {
+                refreshTypeIcons(this);
             }
-        );
-    }
+            return result;
+        }
+    );
+}
 
     // Mirrors the native "Will be X after Mega Evolving" note for real Mega
     // species, triggered by the MnM item instead.
@@ -2934,6 +2996,7 @@ patchFlatAbilitySearch(),
         isMixAndMegaFormat: (room) => getActiveMod(room) === MOD.MIX_AND_MEGA,
         isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED,
         getFranticFusionsBaseStats: (set) => franticFusionsBaseStats(window.room?.curTeam?.dex, set),
+        
         isGodlyGiftFormat,
         isTierShiftAAAFormat,
         requestTSABanlist,
@@ -2948,7 +3011,7 @@ patchFlatAbilitySearch(),
         getCustomToggleMoveIds: (kind, dex) => getCustomToggleMoveIds(dex || window.room?.curTeam?.dex, kind),
         patch: patchEverything,
     };
-
+    installNatureSwapCamomonsListener();
     installCrossEvolutionNicknameListener();
     installConvergenceDonorIcons();
 })();
