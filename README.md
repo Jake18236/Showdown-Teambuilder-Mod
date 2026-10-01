@@ -47,7 +47,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 - Updates displayed base stats.
 - Prevents additional Restricted Pokémon from appearing as legal team members once a God has been selected.
 
-**Inheritance**
+** For Inheritance**
 - Nickname = donor. The donor's movepool and abilities replace the Pokémon's own.
 
 **For Mix N Mega:**
