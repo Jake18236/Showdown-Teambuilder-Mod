@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      4.9
+// @version      5.1
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
