@@ -99,15 +99,15 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 ## Images
 
 
-<img width="658" height="804" alt="Screenshot 2026-09-29 at 3 13 24 PM" src="https://github.com/user-attachments/assets/431b8e1c-f040-4f16-9195-1b8c44f1d3ad" />
-<img width="804" height="779" alt="Screenshot 2026-09-19 142100" src="https://github.com/user-attachments/assets/f868f4a1-d27a-4722-826e-4cbd51a87b0a" />
-<img width="800" height="361" alt="Screenshot 2026-09-27 085513" src="https://github.com/user-attachments/assets/2117fc34-ec38-4147-8ad2-c7b36d2ae115" />
-<img width="800" height="665" alt="Screenshot 2026-09-27 195956" src="https://github.com/user-attachments/assets/33b37c56-4efc-4949-a8cd-47d78d24ad46" />
-<img width="801" height="745" alt="Screenshot 2026-09-28 233444" src="https://github.com/user-attachments/assets/f44b6a0d-4291-40a1-aee1-6dfdeb56569a" />
-<img width="806" height="804" alt="Screenshot 2026-09-30 085614" src="https://github.com/user-attachments/assets/59a54b43-4c0f-42d0-9f87-e49a218d1ecf" />
-<img width="808" height="799" alt="Screenshot 2026-09-29 212800" src="https://github.com/user-attachments/assets/594225f0-2c2e-4237-8702-c6bfe4064006" />
-<img width="804" height="745" alt="Screenshot 2026-09-29 001559" src="https://github.com/user-attachments/assets/af48fc3f-fdee-48f8-bf65-0a5039a5f4b1" />
-<img width="804" height="797" alt="Screenshot 2026-09-23 232052" src="https://github.com/user-attachments/assets/0d0677d9-324b-4256-a5c8-5c2b93dcf69b" />
-<img width="800" height="800" alt="image" src="https://github.com/user-attachments/assets/c3dcef9f-591b-4b81-b66e-b5c9cddf7abd" />
+<img width="458" height="404" alt="Screenshot 2026-09-29 at 3 13 24 PM" src="https://github.com/user-attachments/assets/431b8e1c-f040-4f16-9195-1b8c44f1d3ad" />
+<img width="404" height="479" alt="Screenshot 2026-09-19 142100" src="https://github.com/user-attachments/assets/f868f4a1-d27a-4722-826e-4cbd51a87b0a" />
+<img width="400" height="461" alt="Screenshot 2026-09-27 085513" src="https://github.com/user-attachments/assets/2117fc34-ec38-4147-8ad2-c7b36d2ae115" />
+<img width="400" height="465" alt="Screenshot 2026-09-27 195956" src="https://github.com/user-attachments/assets/33b37c56-4efc-4949-a8cd-47d78d24ad46" />
+<img width="401" height="445" alt="Screenshot 2026-09-28 233444" src="https://github.com/user-attachments/assets/f44b6a0d-4291-40a1-aee1-6dfdeb56569a" />
+<img width="406" height="404" alt="Screenshot 2026-09-30 085614" src="https://github.com/user-attachments/assets/59a54b43-4c0f-42d0-9f87-e49a218d1ecf" />
+<img width="408" height="499" alt="Screenshot 2026-09-29 212800" src="https://github.com/user-attachments/assets/594225f0-2c2e-4237-8702-c6bfe4064006" />
+<img width="404" height="445" alt="Screenshot 2026-09-29 001559" src="https://github.com/user-attachments/assets/af48fc3f-fdee-48f8-bf65-0a5039a5f4b1" />
+<img width="404" height="497" alt="Screenshot 2026-09-23 232052" src="https://github.com/user-attachments/assets/0d0677d9-324b-4256-a5c8-5c2b93dcf69b" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/c3dcef9f-591b-4b81-b66e-b5c9cddf7abd" />
 
   
