@@ -19,11 +19,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 **For Tier Shift:**
 - Automatically applies Tier Shift's base-stat boosts.
 - Displays the modified stats in the Teambuilder.
-- Supports Tier Shift stat boosts which are:
-  - UU / RUBL: +15
-  - RU / NUBL: +20
-  - NU / PUBL: +25
-  - PU / ZU / ZUBL / LC / NFE: +30
+- Supports Tier Shift stat boosts
 - Makes stat sorting/search results account for the modified stats.
 - Supports Tier Shift AAA's dynamic banlist that is not client side for some reason.
 
@@ -48,7 +44,9 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
   
 **For Cross Evolution**
 - Automatically applies cross evolved features
-- "Into [pokemon]" and "[pokemon] into" commands that work very well
+- "into [pokemon]" shows what everything would become if cross evolved into that Pokémon.
+- "[pokemon] into" shows what that Pokémon could become.
+- (those commands make more sense when you actually try them)
 - Speed tooltips
 
 **For Scalemons**
@@ -70,6 +68,9 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 **For Alphabet Cup**
 - Gives all moves naturally and allows search
+
+**For Camomons**
+- Sets type as first two slots
 
 
 ## Installation for Chrome, Firefox, Edge
