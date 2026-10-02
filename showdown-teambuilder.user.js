@@ -1785,6 +1785,7 @@ function getGodlyGiftIllegalChecker(room) {
             'sandyshocks', 'roaringmoon', 'walkingwake', 'gougingfire', 'ragingbolt',
             'irontreads', 'ironbundle', 'ironhands', 'ironjugulis', 'ironmoth',
             'ironthorns', 'ironvaliant', 'ironleaves', 'ironboulder', 'ironcrown',
+            'miraidon', 'koraidon',
         ]),
         eeveelution: new Set([
             'vaporeon', 'jolteon', 'flareon', 'espeon', 'umbreon',
@@ -1974,7 +1975,7 @@ function getGodlyGiftIllegalChecker(room) {
         }
 
         if (searchKind === 'weak') return effectiveness > 1;
-        if (searchKind === 'resists') return effectiveness > 0 && effectiveness < 1;
+        if (searchKind === 'resists') return effectiveness < 1;
         if (searchKind === 'neutral') return effectiveness === 1;
         return false;
     }
