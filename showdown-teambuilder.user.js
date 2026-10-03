@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      5.5
+// @version      5.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -1990,7 +1990,7 @@
         }
 
         if (searchKind === 'weak') return effectiveness > 1;
-        if (searchKind === 'resists') return effectiveness > 0 && effectiveness < 1;
+        if (searchKind === 'resists') return effectiveness < 1;
         if (searchKind === 'neutral') return effectiveness === 1;
         return false;
     }
@@ -2127,29 +2127,29 @@
         const proto = findPrototypeWithMethod(getEngine()?.typedSearch, 'getResults');
 
         return patchMethod(proto, 'getResults', '__qolGodlyGiftPatched', (original) =>
-            function (filters, sortCol, reverseSort) {
-                const result = original.call(this, filters, sortCol, reverseSort);
-                if (!fmtHas(this.format, 'godlygift') || this.searchType !== 'pokemon') return result;
+                           function (filters, sortCol, reverseSort) {
+            const result = original.call(this, filters, sortCol, reverseSort);
+            if (!fmtHas(this.format, 'godlygift') || this.searchType !== 'pokemon') return result;
 
-                const room = getTeambuilderRoom();
-                const isIllegal = room && getGodlyGiftIllegalChecker(room);
-                if (!isIllegal) return result;
+            const room = getTeambuilderRoom();
+            const isIllegal = room && getGodlyGiftIllegalChecker(room);
+            if (!isIllegal) return result;
 
-                const legal = [];
-                const illegal = [];
+            const legal = [];
+            const illegal = [];
 
-                for (const row of result) {
-                    if (row[0] !== 'pokemon') {
-                        legal.push(row);
-                        continue;
-                    }
-                    (isIllegal(this.dex.species.get(row[1])) ? illegal : legal).push(row);
+            for (const row of result) {
+                if (row[0] !== 'pokemon') {
+                    legal.push(row);
+                    continue;
                 }
-
-                if (!illegal.length) return result;
-                return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
+                (isIllegal(this.dex.species.get(row[1])) ? illegal : legal).push(row);
             }
-        );
+
+            if (!illegal.length) return result;
+            return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
+        }
+                          );
     }
 
     // "natdex" chip: use the complete Pokédex as the legal pool (includes mons
@@ -3009,8 +3009,29 @@
     }
 
     // ============================================================
-    // WAIT FOR SHOWDOWN TO FINISH LOADING
+    // KEEP PATCHES APPLIED (room/search objects get rebuilt, e.g. after a battle)
     // ============================================================
+
+    let patched = false;
+
+    function patchLoop() {
+        let ok = false;
+        try {
+            ok = patchEverything();
+        } catch (e) {
+            console.error(LOG, 'patchEverything threw:', e);
+        }
+
+        if (ok && !patched) {
+            patched = true;
+            console.log(LOG, 'All patches applied');
+        }
+
+        // Fast while loading, slow watchdog afterwards.
+        setTimeout(patchLoop, ok ? 1000 : 100);
+    }
+
+    patchLoop();
 
     let attempts = 0;
     const MAX_ATTEMPTS = 300; // ~30s at 100ms
