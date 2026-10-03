@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      5.1
+// @version      5.2
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -44,20 +44,40 @@
     const FRANTIC_FUSIONS_FORMAT = 'gen9franticfusions';
     const INHERITANCE_FORMAT = 'gen9inheritance';
 
-    const FORMAT_MOD_MAP = {
-        gen9tiershift: MOD.TIER_SHIFT,
-        gen9tiershiftaaa: MOD.TIER_SHIFT,
-        gen9mixandmega: MOD.MIX_AND_MEGA,
-        gen9badnboosted: MOD.BAD_N_BOOSTED,
-        gen9crossevolution: MOD.CROSS_EVOLUTION,
-        [SCALEMONS_FORMAT]: MOD.SCALEMONS,
-        [FRANTIC_FUSIONS_FORMAT]: MOD.FRANTIC_FUSIONS,
-        [INHERITANCE_FORMAT]: MOD.INHERITANCE,
-        gen9flipped: MOD.FLIPPED,
-        gen9350cup: MOD.THREE_FIFTY_CUP,
-        gen9natureswap: MOD.NATURE_SWAP,
-        gen9camomons: MOD.CAMOMONS,
+    // ------------------------------------------------------------
+    // Format matching: keyword based, so prefixes/suffixes such as
+    // "nationaldex" (gen9nationaldexmixandmega) don't break detection.
+    // ------------------------------------------------------------
+
+    const fmtId = (f) => String(f || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const fmtHas = (f, ...keys) => {
+        const id = fmtId(f);
+        return keys.some((k) => id.includes(k));
     };
+
+    // Order matters: first match wins.
+    const FORMAT_MOD_KEYWORDS = [
+        ['tiershift', MOD.TIER_SHIFT],        // also covers tiershiftaaa
+        ['mixandmega', MOD.MIX_AND_MEGA],     // covers gen9nationaldexmixandmega
+        ['badnboosted', MOD.BAD_N_BOOSTED],
+        ['crossevolution', MOD.CROSS_EVOLUTION],
+        ['aaaubers', MOD.SCALEMONS],          // Scalemons runs on gen9aaaubers
+        ['scalemons', MOD.SCALEMONS],
+        ['franticfusions', MOD.FRANTIC_FUSIONS],
+        ['inheritance', MOD.INHERITANCE],
+        ['flipped', MOD.FLIPPED],
+        ['350cup', MOD.THREE_FIFTY_CUP],
+        ['natureswap', MOD.NATURE_SWAP],
+        ['camomons', MOD.CAMOMONS],
+    ];
+
+    function modFromFormat(format) {
+        const id = fmtId(format);
+        for (const [kw, mod] of FORMAT_MOD_KEYWORDS) {
+            if (id.includes(kw)) return mod;
+        }
+        return null;
+    }
 
     // Mods whose stat changes are visible in the Pokémon search list.
     const SEARCH_LIST_MODS = new Set([
@@ -106,21 +126,21 @@
     const requestConvergenceBanlist = () => requestBanlist('conv');
 
     // Checking "is this format active" also kicks off the fetch the first time.
-    function formatActive(room, format, key) {
-        const active = room?.curTeam?.format === format;
+    function formatActive(room, keyword, key) {
+        const active = fmtHas(room?.curTeam?.format, keyword);
         if (active) requestBanlist(key);
         return active;
     }
 
-    const isGodlyGiftFormat = (room) => formatActive(room, 'gen9godlygift', 'gg');
-    const isTierShiftAAAFormat = (room) => formatActive(room, 'gen9tiershiftaaa', 'tsa');
-    const isConvergenceFormat = (room) => formatActive(room, 'gen9convergence', 'conv');
+    const isGodlyGiftFormat = (room) => formatActive(room, 'godlygift', 'gg');
+    const isTierShiftAAAFormat = (room) => formatActive(room, 'tiershiftaaa', 'tsa');
+    const isConvergenceFormat = (room) => formatActive(room, 'convergence', 'conv');
 
 
     function getActiveMod(room = getActiveTeambuilderRoom()) {
         if (isGodlyGiftFormat(room)) return MOD.GODLY_GIFT;
         isTierShiftAAAFormat(room);
-        return FORMAT_MOD_MAP[room?.curTeam?.format] || null;
+        return modFromFormat(room?.curTeam?.format);
     }
 
     // Banlists come back as an HTML `/raw` blob with a "<Label> - a, b, c" line.
@@ -654,8 +674,8 @@
             'getBaseResults',
             '__qolFlatAbilityPatched',
             (original) => function () {
-                const isFF = this.format === 'franticfusions';
-                const isInh = this.format === 'inheritance';
+                const isFF = fmtHas(this.format, 'franticfusions');
+                const isInh = fmtHas(this.format, 'inheritance');
                 if (!isFF && !isInh) return original.call(this);
 
                 let results;
@@ -840,7 +860,7 @@
             '__qolCEPatched',
             (original) => function () {
                 const results = original.call(this);
-                if (this.format !== 'crossevolution') return results;
+                if (!fmtHas(this.format, 'crossevolution')) return results;
 
                 this.__qolConvDonors = {};
 
@@ -869,7 +889,7 @@
             'getBaseResults',
             '__qolInheritMovePatched',
             (original) => function () {
-                if (this.format !== 'inheritance') return original.call(this);
+                if (!fmtHas(this.format, 'inheritance')) return original.call(this);
 
                 const inh = resolveInheritance(this.dex, this.set);
                 if (!inh) return original.call(this);
@@ -886,7 +906,7 @@
             'getBaseResults',
             '__qolCEPatched',
             (original) => function () {
-                if (this.format !== 'crossevolution') return original.call(this);
+                if (!fmtHas(this.format, 'crossevolution')) return original.call(this);
 
                 this.__qolConvDonors = {};
 
@@ -1160,7 +1180,7 @@
         const room = getTeambuilderRoom();
         const engine = room?.search?.engine;
         const typed = engine?.typedSearch;
-        if (typed?.format !== CONVERGENCE_FORMAT_ID) return;
+        if (!fmtHas(typed?.format, CONVERGENCE_FORMAT_ID)) return;
 
         typed.baseResults = null;
         typed.baseIllegalResults = null;
@@ -1224,7 +1244,7 @@
             '__qolConvMovePatched',
             (original) => function () {
                 const results = original.call(this);
-                if (this.format !== CONVERGENCE_FORMAT_ID || !this.species) return results;
+                if (!fmtHas(this.format, CONVERGENCE_FORMAT_ID) || !this.species) return results;
 
                 if (!BL.conv.loaded) {
                     requestConvergenceBanlist();
@@ -1265,7 +1285,7 @@
             '__qolConvAbilityPatched',
             (original) => function () {
                 const results = original.call(this);
-                if (this.format !== CONVERGENCE_FORMAT_ID || !this.species) return results;
+                if (!fmtHas(this.format, CONVERGENCE_FORMAT_ID) || !this.species) return results;
 
                 if (!BL.conv.loaded) {
                     requestConvergenceBanlist();
@@ -1320,7 +1340,7 @@
 
         const format = typed?.format;
         if (
-            (format !== CONVERGENCE_FORMAT_ID && format !== 'crossevolution') ||
+            !fmtHas(format, CONVERGENCE_FORMAT_ID, 'crossevolution') ||
             (type !== 'move' && type !== 'ability') ||
             !donors
         ) {
@@ -1370,109 +1390,107 @@
         }).observe(document.documentElement, {childList: true, subtree: true});
     }
 
-// ============================================================
-// GODLY GIFT
-// ============================================================
+    // ============================================================
+    // GODLY GIFT
+    // ============================================================
 
-const godBaseId = (species) => toID(species.baseSpecies || species.name);
+    const godBaseId = (species) => toID(species.baseSpecies || species.name);
 
-// Same resolution the sim uses: Mega Stone / Red-Blue Orb change the God's
-// forme, and battleOnly formes resolve to the species they come from.
-function resolveGodSpecies(dex, set) {
-    if (!dex || !set?.species) return null;
+    // Same resolution the sim uses: Mega Stone / Red-Blue Orb change the God's
+    // forme, and battleOnly formes resolve to the species they come from.
+    function resolveGodSpecies(dex, set) {
+        if (!dex || !set?.species) return null;
 
-    let species = dex.species.get(set.species);
-    if (!species?.exists) return null;
+        let species = dex.species.get(set.species);
+        if (!species?.exists) return null;
 
-    const item = set.item ? dex.items.get(set.item) : null;
-    if (item?.exists) {
-        let forme = null;
-        if (item.megaStone) {
-            forme = item.megaStone[species.name];
-        } else if (item.id === 'redorb' && species.baseSpecies === 'Groudon') {
-            forme = 'Groudon-Primal';
-        } else if (item.id === 'blueorb' && species.baseSpecies === 'Kyogre') {
-            forme = 'Kyogre-Primal';
+        const item = set.item ? dex.items.get(set.item) : null;
+        if (item?.exists) {
+            let forme = null;
+            if (item.megaStone) {
+                forme = item.megaStone[species.name];
+            } else if (item.id === 'redorb' && species.baseSpecies === 'Groudon') {
+                forme = 'Groudon-Primal';
+            } else if (item.id === 'blueorb' && species.baseSpecies === 'Kyogre') {
+                forme = 'Kyogre-Primal';
+            }
+            const formeSpecies = forme ? dex.species.get(forme) : null;
+            if (formeSpecies?.exists) species = formeSpecies;
         }
-        const formeSpecies = forme ? dex.species.get(forme) : null;
-        if (formeSpecies?.exists) species = formeSpecies;
+
+        if (typeof species.battleOnly === 'string') {
+            const prior = dex.species.get(species.battleOnly);
+            if (prior?.exists) species = prior;
+        }
+
+        return species;
     }
 
-    if (typeof species.battleOnly === 'string') {
-        const prior = dex.species.get(species.battleOnly);
-        if (prior?.exists) species = prior;
+    // Restricted by exact forme id or by base species.
+    function isGodlyGiftRestricted(species) {
+        if (!species?.exists) return false;
+        return godlyGiftRestricted.has(species.id) || godlyGiftRestricted.has(godBaseId(species));
     }
 
-    return species;
-}
+    // First teammate that is Restricted (or has Power Construct, when
+    // `powerConstruct` is set). Null if none.
+    function findGodSet(room, {ignoreSet = null, powerConstruct = true} = {}) {
+        const team = room?.curSetList;
+        if (!Array.isArray(team) || !room.curTeam) return null;
 
+        const dex = room.curTeam.dex;
 
+        return team.find((set) => {
+            if (!set?.species || set === ignoreSet) return false;
+            if (powerConstruct && toID(set.ability) === 'powerconstruct') return true;
+            return isGodlyGiftRestricted(resolveGodSpecies(dex, set));
+        }) || null;
+    }
 
-// Restricted by exact forme id or by base species.
-function isGodlyGiftRestricted(species) {
-    if (!species?.exists) return false;
-    return godlyGiftRestricted.has(species.id) || godlyGiftRestricted.has(godBaseId(species));
-}
+    // Each of the God's 6 base stats is donated to the matching team slot
+    // (slot 0 gets HP, slot 1 Atk, ...). If nobody is a God, slot 1 is.
+    function godlyGiftDonation(room, set) {
+        const team = room?.curSetList;
+        if (!room?.curTeam || !set || !Array.isArray(team) || !team.length) return null;
+        if (!godlyGiftRestricted.size) return null; // banlist not loaded yet
 
-// First teammate that is Restricted (or has Power Construct, when
-// `powerConstruct` is set). Null if none.
-function findGodSet(room, {ignoreSet = null, powerConstruct = true} = {}) {
-    const team = room?.curSetList;
-    if (!Array.isArray(team) || !room.curTeam) return null;
+        const index = team.indexOf(set);
+        if (index < 0 || index > 5) return null;
 
-    const dex = room.curTeam.dex;
+        const godSet = findGodSet(room) || team[0];
+        const godSpecies = resolveGodSpecies(room.curTeam.dex, godSet);
+        if (!godSpecies) return null;
 
-    return team.find((set) => {
-        if (!set?.species || set === ignoreSet) return false;
-        if (powerConstruct && toID(set.ability) === 'powerconstruct') return true;
-        return isGodlyGiftRestricted(resolveGodSpecies(dex, set));
-    }) || null;
-}
+        const stat = STATS[index];
+        return {stat, value: godSpecies.baseStats[stat]};
+    }
 
-// Each of the God's 6 base stats is donated to the matching team slot
-// (slot 0 gets HP, slot 1 Atk, ...). If nobody is a God, slot 1 is.
-function godlyGiftDonation(room, set) {
-    const team = room?.curSetList;
-    if (!room?.curTeam || !set || !Array.isArray(team) || !team.length) return null;
-    if (!godlyGiftRestricted.size) return null; // banlist not loaded yet
+    function godlyGiftBaseStats(room, set) {
+        const species = room?.curTeam?.dex?.species?.get(set?.species);
+        if (!species?.exists) return null;
 
-    const index = team.indexOf(set);
-    if (index < 0 || index > 5) return null;
+        const stats = Object.assign({}, species.baseStats);
+        const donation = godlyGiftDonation(room, set);
+        if (donation) stats[donation.stat] = donation.value;
+        return stats;
+    }
 
-    const godSet = findGodSet(room) || team[0];
-    const godSpecies = resolveGodSpecies(room.curTeam.dex, godSet);
-    if (!godSpecies) return null;
+    // Returns `(species) => boolean` (true = illegal to add), or null if no God
+    // has been picked yet. While the Pokémon chooser is open, the slot being
+    // edited is ignored so the God itself can be swapped.
+    function getGodlyGiftIllegalChecker(room) {
+        if (!isGodlyGiftFormat(room) || !godlyGiftRestricted.size) return null;
 
-    const stat = STATS[index];
-    return {stat, value: godSpecies.baseStats[stat]};
-}
+        const ignoreSet = room.curChartName === 'pokemon' ? room.curSet : null;
+        const godSet = findGodSet(room, {ignoreSet, powerConstruct: false});
+        if (!godSet) return null;
 
-function godlyGiftBaseStats(room, set) {
-    const species = room?.curTeam?.dex?.species?.get(set?.species);
-    if (!species?.exists) return null;
+        const godSpecies = resolveGodSpecies(room.curTeam.dex, godSet);
+        if (!godSpecies) return null;
 
-    const stats = Object.assign({}, species.baseStats);
-    const donation = godlyGiftDonation(room, set);
-    if (donation) stats[donation.stat] = donation.value;
-    return stats;
-}
-
-// Returns `(species) => boolean` (true = illegal to add), or null if no God
-// has been picked yet. While the Pokémon chooser is open, the slot being
-// edited is ignored so the God itself can be swapped.
-function getGodlyGiftIllegalChecker(room) {
-    if (!isGodlyGiftFormat(room) || !godlyGiftRestricted.size) return null;
-
-    const ignoreSet = room.curChartName === 'pokemon' ? room.curSet : null;
-    const godSet = findGodSet(room, {ignoreSet, powerConstruct: false});
-    if (!godSet) return null;
-
-    const godSpecies = resolveGodSpecies(room.curTeam.dex, godSet);
-    if (!godSpecies) return null;
-
-    const godId = godBaseId(godSpecies);
-    return (species) => isGodlyGiftRestricted(species) && godBaseId(species) !== godId;
-}
+        const godId = godBaseId(godSpecies);
+        return (species) => isGodlyGiftRestricted(species) && godBaseId(species) !== godId;
+    }
 
     // ============================================================
     // ALPHABET CUP
@@ -1544,7 +1562,7 @@ function getGodlyGiftIllegalChecker(room) {
     // Native learnset check OR Alphabet Cup letter rule.
     function pokemonMatchesMove(ctx, original, row, species, moveId) {
         if (original.call(ctx, row, [['move', moveId]])) return true;
-        return ctx.format === ALPHABET_CUP_FORMAT_ID && alphabetCupCanLearn(ctx.dex, species, moveId);
+        return fmtHas(ctx.format, ALPHABET_CUP_FORMAT_ID) && alphabetCupCanLearn(ctx.dex, species, moveId);
     }
 
     function patchAlphabetCupMoveSearch() {
@@ -1554,7 +1572,7 @@ function getGodlyGiftIllegalChecker(room) {
             '__qolACMovePatched',
             (original) => function () {
                 const results = original.call(this);
-                if (this.format !== ALPHABET_CUP_FORMAT_ID || !this.species) return results;
+                if (!fmtHas(this.format, ALPHABET_CUP_FORMAT_ID) || !this.species) return results;
 
                 const species = this.dex.species.get(this.species);
                 if (!species?.exists) return results;
@@ -1672,7 +1690,7 @@ function getGodlyGiftIllegalChecker(room) {
     const INTO_PREFIX = 'Into ';
     const FROM_PREFIX = 'From ';
 
-    const isCrossFormat = (format) => format === 'crossevolution' || format === 'franticfusions' || format === 'inheritance';
+    const isCrossFormat = (format) => fmtHas(format, 'crossevolution', 'franticfusions', 'inheritance');
 
     // "into <species>" -> target species (Cross Evolution / Frantic Fusions only).
     function parseIntoQuery(engine, query) {
@@ -1684,7 +1702,7 @@ function getGodlyGiftIllegalChecker(room) {
 
         const species = (engine.dex || engine.typedSearch?.dex)?.species?.get(m[1].trim());
         if (!species?.exists || species.battleOnly) return null;
-        if (format === 'crossevolution' && !species.prevo) return null;
+        if (fmtHas(format, 'crossevolution') && !species.prevo) return null;
 
         return species;
     }
@@ -1699,7 +1717,7 @@ function getGodlyGiftIllegalChecker(room) {
 
         const species = (engine.dex || engine.typedSearch?.dex)?.species?.get(m[1].trim());
         if (!species?.exists || species.battleOnly) return null;
-        if (format === 'crossevolution' && !isNfe(species)) return null;
+        if (fmtHas(format, 'crossevolution') && !isNfe(species)) return null;
 
         return species;
     }
@@ -1785,7 +1803,6 @@ function getGodlyGiftIllegalChecker(room) {
             'sandyshocks', 'roaringmoon', 'walkingwake', 'gougingfire', 'ragingbolt',
             'irontreads', 'ironbundle', 'ironhands', 'ironjugulis', 'ironmoth',
             'ironthorns', 'ironvaliant', 'ironleaves', 'ironboulder', 'ironcrown',
-            'miraidon', 'koraidon',
         ]),
         eeveelution: new Set([
             'vaporeon', 'jolteon', 'flareon', 'espeon', 'umbreon',
@@ -1856,8 +1873,6 @@ function getGodlyGiftIllegalChecker(room) {
             case 'recovery':
             case 'pivot':
             case 'priority':
-                return getCustomToggleMoveIds(ctx.dex, kind)
-                    .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
             case 'removal':
                 return getCustomToggleMoveIds(ctx.dex, kind)
                     .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
@@ -1975,7 +1990,7 @@ function getGodlyGiftIllegalChecker(room) {
         }
 
         if (searchKind === 'weak') return effectiveness > 1;
-        if (searchKind === 'resists') return effectiveness < 1;
+        if (searchKind === 'resists') return effectiveness > 0 && effectiveness < 1;
         if (searchKind === 'neutral') return effectiveness === 1;
         return false;
     }
@@ -2086,7 +2101,7 @@ function getGodlyGiftIllegalChecker(room) {
     function patchTsaSearchLegality() {
         return patchMethod(window.BattlePokemonSearch?.prototype, 'getBaseResults', '__qolPatched', (original) =>
                            function () {
-            if (this.format !== 'tiershiftaaa') return original.call(this);
+            if (!fmtHas(this.format, 'tiershiftaaa')) return original.call(this);
 
             requestTSABanlist(); // no-op once loaded/requested
 
@@ -2108,35 +2123,34 @@ function getGodlyGiftIllegalChecker(room) {
     }
 
     // Godly Gift: other Restricted mons move to an "Illegal results" section.
-    // Godly Gift: other Restricted mons move to an "Illegal results" section.
-function patchGodlyGiftSearchLegality() {
-    const proto = findPrototypeWithMethod(getEngine()?.typedSearch, 'getResults');
+    function patchGodlyGiftSearchLegality() {
+        const proto = findPrototypeWithMethod(getEngine()?.typedSearch, 'getResults');
 
-    return patchMethod(proto, 'getResults', '__qolGodlyGiftPatched', (original) =>
-        function (filters, sortCol, reverseSort) {
-            const result = original.call(this, filters, sortCol, reverseSort);
-            if (this.format !== 'godlygift' || this.searchType !== 'pokemon') return result;
+        return patchMethod(proto, 'getResults', '__qolGodlyGiftPatched', (original) =>
+            function (filters, sortCol, reverseSort) {
+                const result = original.call(this, filters, sortCol, reverseSort);
+                if (!fmtHas(this.format, 'godlygift') || this.searchType !== 'pokemon') return result;
 
-            const room = getTeambuilderRoom();
-            const isIllegal = room && getGodlyGiftIllegalChecker(room);
-            if (!isIllegal) return result;
+                const room = getTeambuilderRoom();
+                const isIllegal = room && getGodlyGiftIllegalChecker(room);
+                if (!isIllegal) return result;
 
-            const legal = [];
-            const illegal = [];
+                const legal = [];
+                const illegal = [];
 
-            for (const row of result) {
-                if (row[0] !== 'pokemon') {
-                    legal.push(row);
-                    continue;
+                for (const row of result) {
+                    if (row[0] !== 'pokemon') {
+                        legal.push(row);
+                        continue;
+                    }
+                    (isIllegal(this.dex.species.get(row[1])) ? illegal : legal).push(row);
                 }
-                (isIllegal(this.dex.species.get(row[1])) ? illegal : legal).push(row);
-            }
 
-            if (!illegal.length) return result;
-            return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
-        }
-    );
-}
+                if (!illegal.length) return result;
+                return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
+            }
+        );
+    }
 
     // "natdex" chip: use the complete Pokédex as the legal pool (includes mons
     // the format normally considers dexited/illegal). The chip itself never
@@ -2212,8 +2226,6 @@ function patchGodlyGiftSearchLegality() {
                     matches = !!crossEvolveView(this.dex, species, target);
                 } else if (type === 'from') {
                     matches = !!crossEvolveView(this.dex, this.dex.species.get(target), species.id);
-                } else if (CUSTOM_TOGGLE_FILTERS[type]) {
-                    matches = pokemonMatchesCustomToggle(this, original, row, species, type);
                 } else if (CUSTOM_TOGGLE_FILTERS[type]) {
                     matches = pokemonMatchesCustomToggle(this, original, row, species, type);
                 } else if (type === 'move') {
@@ -2703,22 +2715,22 @@ function patchGodlyGiftSearchLegality() {
                           );
     }
 
-    // In-battle stat guesser (Tier Shift / Scalemons / Frantic Fusions).
+    // In-battle stat guesser (Tier Shift / Scalemons / Frantic Fusions / etc).
     function patchBattleStatGuesserGetStat() {
         return patchMethod(window.BattleStatGuesser?.prototype, 'getStat', '__qolBattlePatched', (original) =>
                            function (stat, set, evOverride, natureOverride) {
             const callOriginal = () => original.call(this, stat, set, evOverride, natureOverride);
 
-            const formatid = String(this.formatid || '').toLowerCase();
+            const formatid = fmtId(this.formatid);
             if (!set?.species || !this.dex?.species?.get) return callOriginal();
 
             let baseStats = null;
             if (formatid.includes('tiershift')) baseStats = tierShiftBaseStats(this.dex, set);
-            else if (formatid === SCALEMONS_FORMAT) baseStats = scalemonsBaseStats(this.dex, set);
-            else if (formatid === 'gen9flipped') baseStats = flippedBaseStats(this.dex, set);
-            else if (formatid === 'gen9350cup') baseStats = threeFiftyCupBaseStats(this.dex, set);
-            else if (formatid === FRANTIC_FUSIONS_FORMAT) baseStats = franticFusionsBaseStats(this.dex, set);
-            else if (formatid === 'gen9natureswap') baseStats = natureSwapBaseStats(this.dex, set);
+            else if (formatid.includes('aaaubers') || formatid.includes('scalemons')) baseStats = scalemonsBaseStats(this.dex, set);
+            else if (formatid.includes('flipped')) baseStats = flippedBaseStats(this.dex, set);
+            else if (formatid.includes('350cup')) baseStats = threeFiftyCupBaseStats(this.dex, set);
+            else if (formatid.includes('franticfusions')) baseStats = franticFusionsBaseStats(this.dex, set);
+            else if (formatid.includes('natureswap')) baseStats = natureSwapBaseStats(this.dex, set);
             if (!baseStats) return callOriginal();
 
             return withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal);
@@ -2853,7 +2865,7 @@ function patchGodlyGiftSearchLegality() {
         return patchMethod(window.BattleAbilitySearch?.prototype, 'getBaseResults', '__qolMixAndMegaPatched', (original) =>
                            function () {
             const results = original.call(this);
-            if (this.format !== 'mixandmega' || !this.set?.item) return results;
+            if (!fmtHas(this.format, 'mixandmega') || !this.set?.item) return results;
 
             const futureAbility = mixAndMegaFutureAbility(this.dex, this.set);
             if (!futureAbility) return results;
@@ -2882,7 +2894,7 @@ function patchGodlyGiftSearchLegality() {
             const speBonus = (n) =>
             shifted(Object.assign({}, species.baseStats, {spe: species.baseStats.spe + n}));
 
-            const formatId = String(battle.format?.id || battle.format?.name || '').toLowerCase();
+            const formatId = fmtId(battle.format?.id || battle.format?.name);
 
             // Tier Shift
             const isTierShift =
@@ -2895,7 +2907,9 @@ function patchGodlyGiftSearchLegality() {
             }
 
             // Scalemons
-            if (formatId === SCALEMONS_FORMAT) return shifted(scalemonsModifiedStats(species));
+            if (formatId.includes('aaaubers') || formatId.includes('scalemons')) {
+                return shifted(scalemonsModifiedStats(species));
+            }
 
             // Frantic Fusions
             if (formatId.includes('franticfusions')) {
@@ -2979,7 +2993,6 @@ function patchGodlyGiftSearchLegality() {
             patchGetStat(),
             patchBattleStatGuesserGetStat(),
             patchBattleStatGuesserGuess(),
-            patchUpdateStatForm(),
             patchStatSlide(),
             patchRenderSetTypeIcons(),
             patchChartSetMixAndMegaTypes(),
