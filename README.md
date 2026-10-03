@@ -2,6 +2,24 @@
 
 A Tampermonkey userscript that adds some features that always annoyed me. Mostly for OMs.
 
+## Installation for Chrome, Firefox, Edge
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/).
+2. Click the installation link below.
+3. Click **Install** in Tampermonkey.
+4. Open Pokémon Showdown.
+
+## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
+
+## Installation for Safari (MacOS and iOS)
+
+1. Download Userscripts on the App Store
+2. Enable the extension
+3. Click the link and install the code as an userscript.
+
+## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
+
+
 ## Some features
 
 **Global Commands**
@@ -76,25 +94,6 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 **For 350 Cup**
 - Doubles all base stats (HP included) of Pokémon with BST ≤ 350 in base stats, real stats, visuals, and search.
 - Speed tooltips
-
-
-## Installation for Chrome, Firefox, Edge
-
-1. Install [Tampermonkey](https://www.tampermonkey.net/).
-2. Click the installation link below.
-3. Click **Install** in Tampermonkey.
-4. Open Pokémon Showdown.
-
-## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
-
-## Installation for Safari (MacOS and iOS)
-
-1. Download Userscripts on the App Store
-2. Enable the extension
-3. Click the link and install the code as an userscript.
-
-## **[Install the Userscript](https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js)**
-
 
 ## Images
 
