@@ -268,6 +268,110 @@
     };
 
     // ============================================================
+    // ALMOST ANY ABILITY: SUGGESTED ABILITIES
+    // ============================================================
+
+    // Keys are species ids (lowercase, no spaces/punctuation); values are ability names.
+    const SUGGESTED_ABILITIES = {
+        'gholdengo': ['Adaptability', 'Bulletproof', 'Beads of Ruin', 'Earth Eater', 'Fluffy', 'Hadron Engine', 'Levitate', 'Magic Guard', 'Regenerator', 'Surge Surfer', 'Volt Absorb', 'Well-Baked Body'], // Gholdengo
+        'corviknight': ['Fluffy', 'Intimidate', 'Prankster', 'Volt Absorb', 'Water Absorb', 'Well-Baked Body'], // Corviknight
+        'greattusk': ['Adaptability', 'Fluffy', 'Magic Guard', 'Mold Breaker', 'Regenerator', 'Refrigerate', 'Scrappy', 'Tough Claws', 'Wandering Spirit', 'Water Absorb'], // Great Tusk
+        'roaringmoon': ['Fluffy', 'Magic Guard', 'Regenerator', 'Sword of Ruin', 'Tough Claws'], // Roaring Moon
+        'zamazenta': ['Magic Guard', 'Scrappy', 'Sword of Ruin', 'Tough Claws'], // Zamazenta
+        'ironmoth': ['Desolate Land', 'Hadron Engine', 'Sheer Force'], // Iron Moth
+        'manaphy': ['Fluffy', 'Motor Drive', 'Protosynthesis', 'Regenerator', 'Surge Surfer', 'Unaware'], // Manaphy
+        'pecharunt': ['Corrosion', 'Earth Eater', 'Fluffy', 'Intimidate', 'Prankster'], // Pecharunt
+        'tinglu': ['Bulletproof', 'Fluffy', 'Magic Guard', 'Regenerator', 'Vessel of Ruin', 'Well-Baked Body'], // Ting-Lu
+        'deoxysspeed': ['Fluffy', 'Hadron Engine', 'Protean', 'Psychic Surge', 'Sheer Force'], // Deoxys-Speed
+        'landorustherian': ['Desolate Land', 'Fluffy', 'Mold Breaker', 'Regenerator', 'Sword of Ruin', 'Well-Baked Body'], // Landorus-Therian
+        'moltres': ['Desolate Land', 'Magic Guard'], // Moltres
+        'primarina': ['Fluffy', 'Primordial Sea', 'Regenerator', 'Sheer Force', 'Stamina', 'Volt Absorb'], // Primarina
+        'screamtail': ['Fluffy', 'Pixilate', 'Regenerator', 'Stamina', 'Unaware'], // Scream Tail
+        'zapdos': ['Intimidate', 'No Guard', 'Primordial Sea'], // Zapdos
+        'chienpao': ['Adaptability', 'Magic Guard', 'Sword of Ruin'], // Chien-Pao
+        'cobalion': ['Earth Eater', 'Magic Guard', 'Well-Baked Body'], // Cobalion
+        'garchomp': ['Adaptability', 'Dragon\'s Maw', 'Fluffy', 'Regenerator', 'Sword of Ruin'], // Garchomp
+        'ironhands': ['Earth Eater', 'Regenerator', 'Surge Surfer'], // Iron Hands
+        'irontreads': ['Bulletproof', 'Earth Eater', 'Magic Guard', 'Regenerator', 'Water Absorb', 'Well-Baked Body'], // Iron Treads
+        'kingambit': ['Adaptability','Earth Eater', 'Fluffy', 'Sword of Ruin', 'Tinted Lens', 'Tough Claws', 'Well-Baked Body'], // Kingambit
+        'landorus': ['Desolate Land', 'Fluffy', 'Primordial Sea', 'Well-Baked Body'], // Landorus
+        'latios': ['Adaptability', 'Dragon\'s Maw', 'Hadron Engine', 'Tinted Lens'], // Latios
+        'meowscarada': ['Adaptability', 'Magic Guard', 'Sword of Ruin'], // Meowscarada
+        'swampert': ['Regenerator'], // Swampert
+        'cinderace': ['Desolate Land', 'Magic Guard', 'Sword of Ruin', 'moldbreaker'], // Cinderace
+        'gliscor': ['Fluffy', 'Regenerator', 'Well-Baked Body'], // Gliscor
+        'ironcrown': ['Earth Eater','Hadron Engine', 'Psychic Surge', 'Tinted Lens', 'Well-Baked Body' ], // Iron Crown
+        'ogerponwellspring': ['Primordial Sea', 'Sword of Ruin'], // Ogerpon-Wellspring
+        'ogerponhearthflame': ['Desolate Land', 'Magic Guard', 'Sword of Ruin'], // Ogerpon-Hearthflame
+        'sinistcha': ['Bulletproof', 'Fluffy', 'Surge Surfer', 'Well-Baked Body'], // Sinistcha
+        'skarmory': ['Fluffy', 'Intimidate',, 'Volt Absorb', 'Well-Baked Body'], // Skarmory
+        'zarude': ['Grassy Surge', 'Sword of Ruin', 'Tough Claws'], // Zarude
+        'blissey': ['Magic Guard', 'Unaware'], // Blissey
+        'brambleghast': ['Adaptability', 'Fluffy', 'Sword of Ruin'], // Brambleghast
+        'goodrahisui': ['Regenerator'], // Goodra-Hisui
+        'heatran': ['Bulletproof', 'Desolate Land'], // Heatran
+        'ogerponcornerstone': ['Rocky Payload', 'Sword of Ruin'], // Ogerpon-Cornerstone
+        'okidogi': ['Corrosion', 'Earth Eater', 'Fluffy', 'Well-Baked Body'], // Okidogi
+        'inteleon': ['Primordial Sea'], // Inteleon
+        'slitherwing': ['Magic Guard', 'Regenerator', 'Sword of Ruin', 'Tinted Lens'], // Slither Wing
+        'smeargle': ['Prankster'], // Smeargle
+        'tinkaton': ['Earth Eater', 'Fluffy', 'Levitate', 'Regenerator', 'Well-Baked Body'], // Tinkaton
+        'thundurustherian': ['Primordial Sea', 'Sheer Force', 'Surge Surfer'], // Thundurus-Therian
+        'tornadustherian': ['Magic Guard', 'Sheer Force'], // Tornadus-Therian
+        'ursalunabloodmoon': ['Adaptability', 'Fluffy', 'Unaware','Water Absorb', ''], // Ursaluna-Bloodmoon
+        'archaludon': ['Primordial Sea'], // Archaludon
+        'chansey': ['Magic Guard', 'Unaware'], // Chansey
+        'chesnaught': ['Flame Body', 'Fluffy', 'Well-Baked Body'], // Chesnaught
+        'cloyster': ['Technician'], // Cloyster
+        'cresselia': ['Stamina', 'Unaware'], // Cresselia
+        'deoxysdefense': ['Intimidate', 'Prankster', 'Unaware'], // Deoxys-Defense
+        'empoleon': ['Bulletproof', 'Levitate', 'Vessel of Ruin', 'Volt Absorb'], // Empoleon
+        'electrodehisui': ['Hadron Engine', 'Magic Guard'], // Electrode-Hisui
+        'garganacl': ['Fluffy'], // Garganacl
+        'ironboulder': ['Sharpness', 'Sword of Ruin'], // Iron Boulder
+        'mamoswine': ['Adaptability', 'Sword of Ruin', 'Technician'], // Mamoswine
+        'mandibuzz': ['Delta Stream', 'Fluffy', 'Magic Guard', 'Unaware', 'Vessel of Ruin', 'voltabsorb', ''], // Mandibuzz
+        'meloetta': ['Regenerator'], // Meloetta
+        'polteageist': ['Normalize', 'Pixilate', 'Queenly Majesty'], // Polteageist
+        'regieleki': ['Pixilate', 'Refrigerate'], // Regieleki
+        'ribombee': ['Prankster'], // Ribombee
+        'samurotthisui': ['Adaptability', 'Primordial Sea', 'Prankster', 'Regenerator'], // Samurott-Hisui
+        'sandyshocks': ['Hadron Engine'], // Sandy Shocks
+        'thundurus': ['Magic Guard', 'Primordial Sea', 'Sheer Force'], // Thundurus
+        'weezinggalar': ['Earth Eater', 'Fluffy', 'Levitate'], // Weezing-Galar
+    };
+
+    function patchSuggestedAbilities() {
+        return patchMethod(
+            window.BattleAbilitySearch?.prototype,
+            'getBaseResults',
+            '__qolSuggestedAbilitiesPatched',
+            (original) => function () {
+                const results = original.call(this);
+                if (!fmtHas(this.format, 'almostanyability') || !this.species) return results;
+
+                const names = SUGGESTED_ABILITIES[toID(this.species)];
+                if (!names?.length) return results;
+
+                const rows = [];
+                const seen = new Set();
+                for (const name of names) {
+                    const ability = this.dex.abilities.get(name);
+                    if (!ability?.exists || seen.has(ability.id)) continue;
+                    seen.add(ability.id);
+                    rows.push(['ability', ability.id]);
+                }
+                if (!rows.length) return results;
+
+                // Keep native notes (html rows) on top, then our header, then everything else.
+                const notes = results.filter((r) => r[0] === 'html');
+                const rest = results.filter((r) => r[0] !== 'html');
+                return [...notes, ['header', 'Suggested Abilities'], ...rows, ...rest];
+            }
+        );
+    }
+
+    // ============================================================
     // TIER SHIFT / BAD 'N BOOSTED / SCALEMONS
     // ============================================================
 
@@ -1973,6 +2077,8 @@
             'sandyshocks', 'roaringmoon', 'walkingwake', 'gougingfire', 'ragingbolt',
             'irontreads', 'ironbundle', 'ironhands', 'ironjugulis', 'ironmoth',
             'ironthorns', 'ironvaliant', 'ironleaves', 'ironboulder', 'ironcrown',
+            'miraidon', 'koraidon',
+
         ]),
         eeveelution: new Set([
             'vaporeon', 'jolteon', 'flareon', 'espeon', 'umbreon',
@@ -3148,6 +3254,8 @@
             patchNatdexSearchLegality(),
             patchGenericBanSearchLegality(),
 
+            patchSuggestedAbilities(),
+
             patchEffectivenessSearchFilters(),
             patchEffectivenessTypeName(),
             patchEffectivenessFilterText(),
@@ -3271,3 +3379,7 @@
     installCrossEvolutionNicknameListener();
     installConvergenceDonorIcons();
 })();
+
+
+
+
