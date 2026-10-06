@@ -11,6 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
 // ==/UserScript==
 
+// comments by claude bc documentation is too much work :C
 (function () {
     'use strict';
 
