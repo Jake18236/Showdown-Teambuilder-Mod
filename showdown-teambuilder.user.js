@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      6.3
+// @version      6.5
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -3242,6 +3242,351 @@
 
         return patchedAny;
     }
+    
+        // ============================================================
+    // MOVE SEARCH: CUSTOM FILTERS
+    //
+    // Type the keyword with no prefix ("sf", "dance", "stab"...), pick the
+    // suggestion at the top, and it becomes a filter chip. Chips AND together
+    // and combine with the native Type / Category / Pokémon filters.
+    // ============================================================
+
+    const MOVE_FILTER_TYPE = 'mv-';   // chip type, e.g. ['mv-sf', 'Sheer Force']
+    const MOVE_ROW_PREFIX = 'mvf ';   // pseudo row id for suggestion rows
+    const COVERAGE_PREFIX = 'Coverage ';
+
+    // Client Move objects don't carry every field, so fall back to raw dex data.
+    const rawMove = (move) => window.BattleMovedex?.[move?.id] || {};
+    const moveField = (move, key) => move?.[key] ?? rawMove(move)[key];
+    const moveFlag = (move, flag) => !!moveField(move, 'flags')?.[flag];
+    const isDamaging = (move) => move.category !== 'Status';
+
+    function hasSecondary(move) {
+        const s = moveField(move, 'secondaries') || moveField(move, 'secondary');
+        return Array.isArray(s) ? s.length > 0 : !!s;
+    }
+
+    // The mon's current typing, including Camomons / Mix and Mega / Cross Evolution.
+    function currentTypes(search) {
+        const set = search.set;
+        const key = [search.species, set?.species, set?.item, set?.name, ...(set?.moves || []).slice(0, 2)].join('|');
+        if (search.__qolTypesKey === key) return search.__qolTypes;
+
+        let types = null;
+        if (set?.species) {
+            types = modifiedTypes(getActiveMod(getActiveTeambuilderRoom()), search.dex, set);
+        }
+        if (!types?.length) {
+            types = search.dex.species.get(search.species || set?.species)?.types || [];
+        }
+
+        search.__qolTypesKey = key;
+        search.__qolTypes = types;
+        return types;
+    }
+
+    const MOVE_TOGGLES = {
+        sf: {
+            label: 'Sheer Force', aliases: ['sheerforce'],
+            desc: 'Damaging moves with a secondary effect',
+            test: (m) => isDamaging(m) && hasSecondary(m),
+        },
+        slicing: {
+            label: 'Slicing', aliases: ['slice', 'sharpness'],
+            desc: 'Slicing moves (Sharpness)',
+            test: (m) => moveFlag(m, 'slicing'),
+        },
+        recoil: {
+            label: 'Recoil', aliases: [],
+            desc: 'Moves that cause recoil (incl. Steel Beam, Mind Blown)',
+            test: (m) => !!moveField(m, 'recoil') || !!moveField(m, 'mindBlownRecoil'),
+        },
+        stab: {
+            label: 'STAB', aliases: [],
+            desc: "Damaging moves matching this Pokémon's current typing",
+            test: (m, s) => isDamaging(m) && currentTypes(s).includes(m.type),
+        },
+        contact: {
+            label: 'Contact', aliases: [],
+            desc: 'Moves that make contact',
+            test: (m) => moveFlag(m, 'contact'),
+        },
+        punch: {
+            label: 'Punch', aliases: ['punching'],
+            desc: 'Punching moves (Iron Fist)',
+            test: (m) => moveFlag(m, 'punch'),
+        },
+        recovery: {
+            label: 'Recovery', aliases: ['heal', 'triage'],
+            desc: 'Every move boosted by Triage (incl. draining moves)',
+            test: (m) => moveFlag(m, 'heal'),
+        },
+        crit: {
+            label: 'Crit', aliases: ['critical', 'highcrit'],
+            desc: 'High crit ratio or always crits',
+            test: (m) => moveField(m, 'critRatio') > 1 || !!moveField(m, 'willCrit'),
+        },
+        dance: {
+            label: 'Dance', aliases: ['dancing'],
+            desc: 'Dance moves (Dancer)',
+            test: (m) => moveFlag(m, 'dance'),
+        },
+        priority: {
+            label: 'Priority', aliases: ['prio'],
+            desc: 'Moves with priority above 0',
+            test: (m) => m.priority > 0,
+        },
+        sound: {
+            label: 'Sound', aliases: [],
+            desc: 'Sound moves (Soundproof)',
+            test: (m) => moveFlag(m, 'sound'),
+        },
+        phaze: {
+            label: 'Phaze', aliases: ['phazing', 'forceswitch'],
+            desc: 'Forces the target out (Whirlwind, Dragon Tail...)',
+            test: (m) => !!moveField(m, 'forceSwitch'),
+        },
+    };
+
+    const isMoveFilterType = (t) => typeof t === 'string' && t.startsWith(MOVE_FILTER_TYPE);
+
+    // ---------- coverage ----------
+
+    const allTypeNames = () =>
+        Object.keys(window.BattleTypeChart || {})
+            .filter((id) => id !== 'stellar')
+            .map((id) => ({id, name: id.charAt(0).toUpperCase() + id.slice(1)}));
+
+    const isCoverageQuery = (raw) => /^coverage(\s|$)/i.test(raw) || /^cov\s/i.test(raw);
+    const coverageTypesFromValue = (value) =>
+        String(value).replace(/^Coverage\s+/i, '').split('/').filter(Boolean);
+
+    // "coverage fire, steel" -> suggestion rows for the typing being built.
+    function coverageSuggestions(raw) {
+        const arg = raw.replace(/^(coverage|cov)\s*/i, '');
+        const tokens = arg.split(/[\s,\/]+/).filter(Boolean).map(toSearchId);
+        const partial = arg && !/[\s,\/]$/.test(arg) ? tokens.pop() : '';
+
+        const all = allTypeNames();
+        const fixed = [];
+        for (const t of tokens) {
+            const hit = all.find((x) => x.id === t);
+            if (!hit) return [['html', `Unknown type "<b>${BattleLog.escapeHTML(t)}</b>"`]];
+            if (!fixed.includes(hit)) fixed.push(hit);
+        }
+
+        const mk = (types) => ['ability', MOVE_ROW_PREFIX + 'cov ' + types.map((t) => t.name).join('/'), 0, 0];
+        const rows = [];
+
+        if (fixed.length && !partial) rows.push(mk(fixed)); // the typing exactly as typed
+        if (fixed.length < 4) {
+            const cands = all.filter((x) => !fixed.includes(x) && (!partial || x.id.startsWith(partial)));
+            cands.sort((a, b) => (b.id === partial) - (a.id === partial)); // exact match first
+            for (const c of cands) rows.push(mk([...fixed, c]));
+        }
+
+        if (!rows.length) {
+            return [['html', 'Coverage takes up to 4 defending types, e.g. <b>coverage Fire, Steel</b>']];
+        }
+        return [['header', 'Coverage (defending typing)'], ...rows];
+    }
+
+    function typeMultiplier(dex, move, atk, def) {
+        if (move.id === 'freezedry' && def === 'Water') return 2;
+        if (move.id === 'thousandarrows' && def === 'Flying') return 1;
+
+        const v = dex?.types?.get?.(def)?.damageTaken?.[atk] ??
+            window.BattleTypeChart?.[toID(def)]?.damageTaken?.[atk];
+        return v === 1 ? 2 : v === 2 ? 0.5 : v === 3 ? 0 : 1;
+    }
+
+    // True if the move is super effective against a Pokémon with ALL of defTypes.
+    function moveCovers(dex, move, defTypes) {
+        if (!isDamaging(move) || !defTypes.length) return false;
+
+        // Fixed-damage moves (Seismic Toss, Counter...) don't scale with type.
+        if (moveField(move, 'ohko') || moveField(move, 'damage') || moveField(move, 'damageCallback')) return false;
+        if (move.basePower === 0 && !moveField(move, 'basePowerCallback')) return false;
+
+        const atkTypes = move.id === 'flyingpress' ? [move.type, 'Flying'] : [move.type];
+        let eff = 1;
+        for (const atk of atkTypes) {
+            for (const def of defTypes) eff *= typeMultiplier(dex, move, atk, def);
+        }
+        return eff > 1;
+    }
+
+    // ---------- suggestions / rows ----------
+
+    function moveToggleSuggestions(query) {
+        const q = toSearchId(query);
+        if (q.length < 2) return []; // avoids hijacking Enter while typing e.g. "p" for Protect
+
+        const rows = [];
+        for (const [key, def] of Object.entries(MOVE_TOGGLES)) {
+            const names = [key, def.label, ...def.aliases].map(toSearchId);
+            if (names.some((n) => n.startsWith(q))) rows.push(['ability', MOVE_ROW_PREFIX + key, 0, 0]);
+        }
+        return rows.length ? [['header', 'Move filters'], ...rows] : [];
+    }
+
+    function moveFilterRowInfo(id) {
+        const body = id.slice(MOVE_ROW_PREFIX.length);
+        if (body.startsWith('cov ')) {
+            const names = body.slice(4);
+            return {label: COVERAGE_PREFIX + names, desc: `Super effective against a ${names} Pokémon`};
+        }
+        const def = MOVE_TOGGLES[body];
+        return def ? {label: def.label, desc: def.desc} : null;
+    }
+
+    function addMoveFilterFromRow(engine, rowId) {
+        const body = rowId.slice(MOVE_ROW_PREFIX.length);
+        let type, value;
+
+        if (body.startsWith('cov ')) {
+            type = MOVE_FILTER_TYPE + 'cov';
+            value = COVERAGE_PREFIX + body.slice(4);
+        } else if (MOVE_TOGGLES[body]) {
+            type = MOVE_FILTER_TYPE + body;
+            value = MOVE_TOGGLES[body].label;
+        } else {
+            return false;
+        }
+
+        if (!engine.filters) engine.filters = [];
+        if (!engine.filters.some((f) => f[0] === type && f[1] === value)) engine.filters.push([type, value]);
+        engine.results = null;
+        return true;
+    }
+
+    // ---------- patches ----------
+
+    function patchMoveSearchFilters() {
+        return patchMethod(window.BattleMoveSearch?.prototype, 'filter', '__qolMoveFiltersPatched', (original) =>
+            function (row, filters) {
+                const custom = (filters || []).filter((f) => isMoveFilterType(f[0]));
+                if (!custom.length) return original.call(this, row, filters);
+
+                // Native filters (type/category/pokemon) go through the original.
+                const native = filters.filter((f) => !isMoveFilterType(f[0]));
+                if (!original.call(this, row, native)) return false;
+                if (row[0] !== 'move') return true;
+
+                const move = this.dex.moves.get(row[1]);
+                if (!move?.exists) return false;
+
+                return custom.every(([type, value]) => {
+                    const key = type.slice(MOVE_FILTER_TYPE.length);
+                    if (key === 'cov') return moveCovers(this.dex, move, coverageTypesFromValue(value));
+                    const def = MOVE_TOGGLES[key];
+                    return def ? !!def.test(move, this) : true;
+                });
+            }
+        );
+    }
+
+    // Native find() runs toID() on the query, which would destroy
+    // "coverage fire, steel", so coverage queries bypass it.
+    function patchMoveFilterFind() {
+        return patchEngineMethod('find', '__qolMoveFilterFindPatched', (original) =>
+            function (query) {
+                if (this.typedSearch?.searchType !== 'move') return original.call(this, query);
+
+                const raw = String(query || '').trim();
+                if (!isCoverageQuery(raw)) {
+                    this.exactMatch = false;
+                    return original.call(this, query);
+                }
+
+                const key = 'mvcov:' + raw.toLowerCase();
+                if (this.query === key && this.results) return false;
+
+                this.query = key;
+                this.exactMatch = true;
+                this.results = this.textSearch(raw);
+                this.selection = this.getFirstResultIndex();
+                return true;
+            }
+        );
+    }
+
+    function patchMoveFilterTextSearch() {
+        return patchEngineMethod('textSearch', '__qolMoveFilterTextSearchPatched', (original) =>
+            function (query) {
+                if (this.typedSearch?.searchType !== 'move') return original.call(this, query);
+
+                const raw = String(query || '').trim();
+
+                if (isCoverageQuery(raw)) {
+                    this.results = coverageSuggestions(raw);
+                    this.exactMatch = true;
+                    return this.results;
+                }
+
+                const native = original.call(this, query) || [];
+                const custom = moveToggleSuggestions(raw);
+                if (!custom.length) return native;
+
+                // Ours first so Enter picks them; native results stay right below.
+                return (this.results = custom.concat(native));
+            }
+        );
+    }
+
+    function patchMoveFilterAddFilter() {
+        return patchEngineMethod('addFilter', '__qolMoveFilterAddPatched', (original) =>
+            function (entry) {
+                const id = entry?.[1];
+                if (this.typedSearch?.searchType === 'move' && typeof id === 'string' && id.startsWith(MOVE_ROW_PREFIX)) {
+                    return addMoveFilterFromRow(this, id);
+                }
+                return original.call(this, entry);
+            }
+        );
+    }
+
+    function patchMoveFilterResultNames() {
+        return patchEngineMethod('getResultName', '__qolMoveFilterNamePatched', (original) =>
+            function (result) {
+                const id = typeof result?.[1] === 'string' ? result[1] : '';
+                if (this.typedSearch?.searchType === 'move' && id.startsWith(MOVE_ROW_PREFIX)) {
+                    const info = moveFilterRowInfo(id);
+                    if (info) return info.label;
+                }
+                return original.call(this, result);
+            }
+        );
+    }
+
+    // Same trick as the Pokémon toggles: render through a harmless ability row,
+    // then swap the visible name (and description column) for ours.
+    function patchMoveFilterRows() {
+        return patchMethod(window.BattleSearch?.prototype, 'renderRow', '__qolMoveFilterRowPatched', (original) =>
+            function (row, type, matchStart, matchEnd, errorMessage, attrs) {
+                const id = type === 'ability' && typeof row?.[1] === 'string' ? row[1] : '';
+                const info = id.startsWith(MOVE_ROW_PREFIX) ? moveFilterRowInfo(id) : null;
+                if (!info) return original.call(this, row, type, matchStart, matchEnd, errorMessage, attrs);
+
+                return original.call(this, ['ability', 'noability'], 'ability', 0, 0, errorMessage, attrs)
+                    .replace(/(<span class="col namecol">)[\s\S]*?(<\/span>)/, (m, a, b) => a + info.label + b)
+                    .replace(/(<span class="col abilitydesccol">)[\s\S]*?(<\/span>)/, (m, a, b) => a + info.desc + b);
+            }
+        );
+    }
+
+    function patchMoveFilters() {
+        if (!getEngine()) return false;
+
+        return [
+            patchMoveSearchFilters(),
+            patchMoveFilterFind(),
+            patchMoveFilterTextSearch(),
+            patchMoveFilterAddFilter(),
+            patchMoveFilterResultNames(),
+            patchMoveFilterRows(),
+        ].every(Boolean);
+    }
 
     // ============================================================
     // PATCH EVERYTHING
@@ -3262,6 +3607,7 @@
             patchEffectivenessFilterText(),
             patchEffectivenessSetType(),
             patchEngineSearch(),
+            patchMoveFilters(),
 
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
