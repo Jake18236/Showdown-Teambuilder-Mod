@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      7.0
+// @version      7.1
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -1716,7 +1716,7 @@
                     (row) => row[0] !== 'pokemon' || !isBannedByList(entry.bans, this.dex.species.get(row[1]))
                 );
 
-                // Pokebilities: a native banned ability makes the mon illegal (not removed).
+                // Pokebilities: a native banned ability makes the mon illegal
                 if (fmtHas(this.format, 'pokebilities') && entry.bans.abilities.size) {
                     const illegalIdx = out.findIndex((r) => r[0] === 'header' && /illegal/i.test(String(r[1])));
                     const legal = [];
@@ -1740,7 +1740,7 @@
 
                         out = illegalIdx < 0
                             ? legal.concat([['header', TL(['Illegal Pokémon'])], ...moved])
-                        : legal.concat(moved); // existing illegal section is last
+                        : legal.concat(moved);
                     }
                 }
 
