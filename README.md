@@ -13,7 +13,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 1. Download Userscripts on the App Store
 2. Enable the extension
-3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/download/v7.1.0/showdown-teambuilder.1.user.js)** and install the code as an userscript.
+3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)** and install the code as an userscript.
 
 
 
