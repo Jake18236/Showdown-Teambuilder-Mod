@@ -7,8 +7,8 @@
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
-// @downloadURL  https://raw.githubusercontent.com/Jake18236/showdown-teambuilder-mod/main/showdown-teambuilder.user.js
+// @updateURL    https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/download/v7.1.0/showdown-teambuilder.1.user.js
+// @downloadURL  https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/download/v7.1.0/showdown-teambuilder.1.user.js
 // ==/UserScript==
 
 // comments by claude bc documentation is too much work :C
