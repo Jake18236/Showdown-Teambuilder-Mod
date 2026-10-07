@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      6.7
+// @version      7.0
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -342,6 +342,8 @@
         'weezinggalar': ['Earth Eater', 'Fluffy', 'Levitate'], // Weezing-Galar
     };
 
+    const isPokeAAAFormat = (f) => fmtHas(f, 'pokebilitiesaaa', 'pokeaaa', 'pokebilitiesalmostanyability');
+
     function patchSuggestedAbilities() {
         return patchMethod(
             window.BattleAbilitySearch?.prototype,
@@ -349,28 +351,51 @@
             '__qolSuggestedAbilitiesPatched',
             (original) => function () {
                 const results = original.call(this);
-                if (!fmtHas(this.format, 'almostanyability') || !this.species) return results;
+                const isPoke = isPokeAAAFormat(this.format);
+                if (!(isPoke || fmtHas(this.format, 'almostanyability')) || !this.species) return results;
 
-                const names = SUGGESTED_ABILITIES[toID(this.species)];
-                if (!names?.length) return results;
-
-                const rows = [];
+                const legalIds = new Set(results.filter((r) => r[0] === 'ability').map((r) => r[1]));
                 const seen = new Set();
-                for (const name of names) {
+
+                const nativeRows = [];
+                const nativeIllegal = new Set();
+                if (isPoke) {
+                    const sp = this.dex.species.get(this.species);
+                    for (const name of Object.values(sp?.abilities || {})) {
+                        const ability = this.dex.abilities.get(name);
+                        if (!ability?.exists || seen.has(ability.id)) continue;
+                        seen.add(ability.id);
+                        nativeRows.push(['ability', ability.id]);
+
+                    }
+                }
+                this.__qolNativeIllegal = nativeIllegal;
+
+                const suggestedRows = [];
+                for (const name of SUGGESTED_ABILITIES[toID(this.species)] || []) {
                     const ability = this.dex.abilities.get(name);
                     if (!ability?.exists || seen.has(ability.id)) continue;
                     seen.add(ability.id);
-                    rows.push(['ability', ability.id]);
+                    suggestedRows.push(['ability', ability.id]);
                 }
-                if (!rows.length) return results;
+                if (!nativeRows.length && !suggestedRows.length) return results;
 
-                // Keep native notes (html rows) on top, then our header, then everything else.
                 const notes = results.filter((r) => r[0] === 'html');
-                const rest = results.filter((r) => r[0] !== 'html');
-                return [...notes, ['header', 'Suggested Abilities'], ...rows, ...rest];
+                const rest = results
+                .filter((r) => r[0] !== 'html' && !(r[0] === 'ability' && seen.has(r[1])))
+                // drop headers left empty after removing duplicates
+                .filter((r, i, arr) => r[0] !== 'header' || (arr[i + 1] && arr[i + 1][0] !== 'header'));
+
+                return [
+                    ...notes,
+                    ...(nativeRows.length ? [['header', 'Native Abilities'], ...nativeRows] : []),
+                    ...(suggestedRows.length ? [['header', 'Suggested Abilities'], ...suggestedRows] : []),
+                    ...rest,
+                ];
             }
         );
     }
+
 
     // ============================================================
     // TIER SHIFT / BAD 'N BOOSTED / SCALEMONS
@@ -1498,7 +1523,7 @@
     }
 
     // ============================================================
-    // GENERIC AUTO BANLIST (every format)
+    // GENERIC AUTO (every format)
     //
     // Same idea as TSAAA, but for any format: silently ask the server for
     // `/tier <format>`, parse its "Bans" and "Unbans" lines, and drop banned
@@ -1537,6 +1562,7 @@
         const bans = {
             species: new Set(), baseSpecies: new Set(), tiers: new Set(),
             unbanned: new Set(), unbannedBase: new Set(),
+            abilities: new Set(),
         };
         const isBase = (sp) => sp.name === (sp.baseSpecies || sp.name);
 
@@ -1548,10 +1574,23 @@
             }
 
             const sp = Dex.species.get(token);
-            if (!sp?.exists) continue; // ability / item / move / clause
+            if (!sp?.exists) {
+                // Only "Bans" is read, so "Restricted" abilities are never collected.
+                const ab = Dex.abilities.get(token);
+                if (ab?.exists) bans.abilities.add(ab.id);
+
+                bans.abilities.add('sandveil');
+                bans.abilities.add('snowcloak');
+
+                continue; // item / move / clause
+            }
             // A base-species ban covers every forme; a forme ban only that forme.
             (isBase(sp) ? bans.baseSpecies : bans.species).add(sp.id);
         }
+
+        // Evasion Abilities Clause lives in the Ruleset, not the Bans line, and
+        // bans Sand Veil and Snow Cloak.
+
 
         for (const token of sections.Unbans || []) {
             const sp = Dex.species.get(token);
@@ -1619,17 +1658,36 @@
     }
 
     // Rebuild the open Pokémon search once a banlist arrives.
+    let genericBanRefreshTimeout;
+
     function refreshGenericBanSearch() {
         const room = getTeambuilderRoom();
         const engine = room?.search?.engine;
         const typed = engine?.typedSearch;
         if (!typed || typed.searchType !== 'pokemon') return;
 
-        engine.results = null;
+        const update = () => {
+            engine.results = null;
 
-        const ui = room.search;
-        if (typeof ui.update === 'function') ui.update();
-        else if (typeof ui.updateResults === 'function') ui.updateResults();
+            const ui = room.search;
+            if (typeof ui.update === 'function') ui.update();
+            else if (typeof ui.updateResults === 'function') ui.updateResults();
+        };
+
+        update();
+
+        clearTimeout(genericBanRefreshTimeout);
+        genericBanRefreshTimeout = setTimeout(update, 500);
+    }
+
+    // First native ability (any slot) of `sp` that the format bans, else null.
+    function nativeBannedAbility(bans, sp) {
+        if (!bans?.abilities?.size || !sp?.abilities) return null;
+        for (const name of Object.values(sp.abilities)) {
+            const id = toID(name);
+            if (id && bans.abilities.has(id)) return name;
+        }
+        return null;
     }
 
     // Filters the FINAL result list (so banned mons vanish whether they were in
@@ -1654,13 +1712,42 @@
                     return results;
                 }
 
-                const kept = results.filter(
+                let out = results.filter(
                     (row) => row[0] !== 'pokemon' || !isBannedByList(entry.bans, this.dex.species.get(row[1]))
                 );
-                if (kept.length === results.length) return results;
+
+                // Pokebilities: a native banned ability makes the mon illegal (not removed).
+                if (fmtHas(this.format, 'pokebilities') && entry.bans.abilities.size) {
+                    const illegalIdx = out.findIndex((r) => r[0] === 'header' && /illegal/i.test(String(r[1])));
+                    const legal = [];
+                    const moved = [];
+
+                    out.forEach((row, i) => {
+                        const inLegalZone = illegalIdx < 0 || i < illegalIdx;
+                        if (
+                            inLegalZone && row[0] === 'pokemon' &&
+                            nativeBannedAbility(entry.bans, this.dex.species.get(row[1]))
+                        ) moved.push(row);
+                        else legal.push(row);
+                    });
+
+                    if (moved.length) {
+                        if (!this.illegalReasons) this.illegalReasons = {};
+                        for (const row of moved) {
+                            const ab = nativeBannedAbility(entry.bans, this.dex.species.get(row[1]));
+                            this.illegalReasons[row[1]] = `Banned ability: ${ab}`;
+                        }
+
+                        out = illegalIdx < 0
+                            ? legal.concat([['header', TL(['Illegal Pokémon'])], ...moved])
+                        : legal.concat(moved); // existing illegal section is last
+                    }
+                }
+
+                if (out.length === results.length && out.every((r, i) => r === results[i])) return results;
 
                 // Drop any header left with nothing under it.
-                return kept.filter((row, i) => row[0] !== 'header' || (kept[i + 1] && kept[i + 1][0] !== 'header'));
+                return out.filter((row, i) => row[0] !== 'header' || (out[i + 1] && out[i + 1][0] !== 'header'));
             }
         );
     }
@@ -3728,7 +3815,7 @@
             scheduled = true;
             requestAnimationFrame(() => {
                 scheduled = false;
-                                try {
+                try {
                     decorateMoveFilterRows();
                     decoratePokemonFilterRows();
                 } catch (e) {
@@ -3783,6 +3870,7 @@
             patchGenericBanSearchLegality(),
 
             patchSuggestedAbilities(),
+
 
             patchEffectivenessSearchFilters(),
             patchEffectivenessTypeName(),
@@ -3910,7 +3998,6 @@
     installMoveFilterRowDecorator();
     installCoverageSeparatorFix();
 })();
-
 
 
 
