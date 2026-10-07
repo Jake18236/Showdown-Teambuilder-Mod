@@ -5,7 +5,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 ## Installation for Chrome, Firefox, Edge
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
-2. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/download/v7.1.0/showdown-teambuilder.1.user.js)**.
+2. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**.
 4. Click **Install** in Tampermonkey.
 5. Open Pokémon Showdown.
 
