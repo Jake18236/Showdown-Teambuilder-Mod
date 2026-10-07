@@ -6,14 +6,14 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**.
-4. Click **Install** in Tampermonkey.
-5. Open Pokémon Showdown.
+3. Click **Install** in Tampermonkey.
+4. Open Pokémon Showdown.
 
 ## Installation for Safari (MacOS and iOS)
 
 1. Download Userscripts on the App Store
 2. Enable the extension
-3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)** and install the code as an userscript.
+3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**, click view, and install the code as an userscript.
 
 
 
