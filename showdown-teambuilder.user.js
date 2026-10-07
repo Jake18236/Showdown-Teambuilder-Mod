@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      7.1
+// @version      7.4
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -1657,9 +1657,6 @@
         return {suppress};
     }
 
-    // Rebuild the open Pokémon search once a banlist arrives.
-    let genericBanRefreshTimeout;
-
     function refreshGenericBanSearch() {
         const room = getTeambuilderRoom();
         const engine = room?.search?.engine;
@@ -1676,8 +1673,6 @@
 
         update();
 
-        clearTimeout(genericBanRefreshTimeout);
-        genericBanRefreshTimeout = setTimeout(update, 500);
     }
 
     // First native ability (any slot) of `sp` that the format bans, else null.
@@ -1742,6 +1737,7 @@
                             ? legal.concat([['header', TL(['Illegal Pokémon'])], ...moved])
                         : legal.concat(moved);
                     }
+                    refreshGenericBanSearch();
                 }
 
                 if (out.length === results.length && out.every((r, i) => r === results[i])) return results;
@@ -3441,6 +3437,389 @@
     };
 
 
+    // ------------------------------------------------------------
+    // SOME MORE MOVE FILTERS
+    // ------------------------------------------------------------
+
+    const setOf = (s) => new Set(s.split(/\s+/).filter(Boolean));
+
+    // Callback-based moves have no usable data in the client dex, so list them.
+    const HAZARD_MOVES = setOf('spikes toxicspikes stealthrock stickyweb ceaselessedge stoneaxe');
+    const HAZARD_CONDITIONS = setOf('spikes toxicspikes stealthrock stickyweb');
+    const REMOVAL_MOVES = setOf('defog rapidspin mortalspin courtchange tidyup');
+    const PIVOT_MOVES = setOf('uturn voltswitch flipturn partingshot chillyreception teleport shedtail batonpass');
+    const TRAP_MOVES = setOf(
+        'block meanlook spiderweb anchorshot spiritshackle thousandwaves jawlock octolock firespin ' +
+        'whirlpool wrap bind clamp infestation magmastorm sandtomb snaptrap thundercage fairylock'
+    );
+    const TRAP_VOLATILES = setOf('partiallytrapped trapped octolock');
+    const REDIRECT_MOVES = setOf('followme ragepowder spotlight');
+    const SELF_KO_MOVES = setOf('explosion selfdestruct mistyexplosion memento finalgambit healingwish lunardance');
+    const CURE_STATUS_MOVES = setOf(
+        'aromatherapy healbell refresh rest junglehealing lunarblessing takeheart sparklingaria ' +
+        'smellingsalts wakeupslap purify healingwish lunardance'
+    );
+
+    // ---------- status infliction ----------
+
+    const STATUS_NAMES = {brn: 'burn', par: 'paralyze', slp: 'sleep', psn: 'poison', tox: 'poison', frz: 'freeze'};
+    const EXTRA_STATUS_MOVES = {
+        triattack: ['burn', 'paralyze', 'freeze'],
+        direclaw: ['poison', 'paralyze', 'sleep'],
+        yawn: ['sleep'],
+        mortalspin: ['poison'],
+    };
+
+    // Statuses the move can put on the TARGET (Rest etc. are excluded).
+    function inflictedStatuses(move) {
+        const out = new Set();
+        const add = (st) => { if (STATUS_NAMES[st]) out.add(STATUS_NAMES[st]); };
+
+        if (moveField(move, 'target') !== 'self') add(moveField(move, 'status'));
+        for (const s of [].concat(moveField(move, 'secondaries') || [], moveField(move, 'secondary') || [])) {
+            if (s) add(s.status);
+        }
+        for (const n of EXTRA_STATUS_MOVES[move.id] || []) out.add(n);
+        return out;
+    }
+
+    // ---------- stat changes ----------
+
+    const BOOST_STAT_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+    const SELF_BOOST_TARGETS = new Set(['self', 'allies', 'allySide', 'adjacentAllyOrSelf']);
+    const BOOST_OVERRIDES = {
+        bellydrum: {atk: 1}, filletaway: {atk: 1, spa: 1, spe: 1}, curse: {atk: 1, def: 1, spe: -1},
+        stuffcheeks: {def: 2}, tidyup: {atk: 1, spe: 1},
+        noretreat: {atk: 1, def: 1, spa: 1, spd: 1, spe: 1},
+    };
+
+    // {self: [boostObjects], target: [boostObjects]}, including secondary effects.
+    function moveBoostEffects(move) {
+        const fx = {self: [], target: []};
+
+        const override = BOOST_OVERRIDES[move.id];
+        if (override) { fx.self.push(override); return fx; }
+
+        const boosts = moveField(move, 'boosts');
+        if (boosts) (SELF_BOOST_TARGETS.has(moveField(move, 'target')) ? fx.self : fx.target).push(boosts);
+
+        const selfBoosts = moveField(move, 'self')?.boosts;
+        if (selfBoosts) fx.self.push(selfBoosts);
+
+        for (const s of [].concat(moveField(move, 'secondaries') || [], moveField(move, 'secondary') || [])) {
+            if (s?.boosts) fx.target.push(s.boosts);
+            if (s?.self?.boosts) fx.self.push(s.self.boosts);
+        }
+        return fx;
+    }
+
+    const boostHas = (list, sign, stat) =>
+        list.some((b) => (stat === 'stats' ? BOOST_STAT_KEYS : [stat]).some((k) => (b[k] || 0) * sign > 0));
+
+    const STAT_FILTER_STATS = [
+        {key: 'atk', label: 'Attack', aliases: ['atk', 'attack']},
+        {key: 'def', label: 'Defense', aliases: ['def', 'defense', 'defence']},
+        {key: 'spa', label: 'Sp. Atk', aliases: ['spa', 'spatk', 'specialattack', 'spatt', 'satk']},
+        {key: 'spd', label: 'Sp. Def', aliases: ['spd', 'spdef', 'specialdefense', 'specialdefence', 'sdef']},
+        {key: 'spe', label: 'Speed', aliases: ['spe', 'speed']},
+        {key: 'accuracy', label: 'Accuracy', aliases: ['acc', 'accuracy']},
+        {key: 'evasion', label: 'Evasion', aliases: ['eva', 'evasion', 'evasiveness']},
+        {key: 'stats', label: 'Stats', aliases: ['stats', 'stat', 'allstats', 'any']},
+    ];
+
+    const STAT_FILTER_FAMILIES = [
+        {id: 'boosts', label: 'Boosts', who: 'self', sign: 1, verb: "Raises the user's",
+         names: ['boosts', 'boost', 'raises', 'raise', 'buffs']},
+        {id: 'lowers', label: 'Lowers', who: 'self', sign: -1, verb: "Lowers the user's",
+         names: ['lowers', 'lower', 'drops', 'drop', 'reduces']},
+        {id: 'lowerstarget', label: 'Lowers Target', who: 'target', sign: -1, verb: "Lowers the target's",
+         names: ['lowers target', 'lower target', 'drops target', 'drop target']},
+        {id: 'zboosts', label: 'Z-Boosts', z: true, verb: 'Z-Power raises the user\'s',
+         names: ['zboosts', 'zboost', 'z-boosts', 'zmove boosts', 'z boosts']},
+    ];
+
+    function zBoostHas(move, stat) {
+        const zb = moveField(move, 'zMove')?.boost;
+        if (!zb) return false;
+        return (stat === 'stats' ? BOOST_STAT_KEYS : [stat]).some((k) => (zb[k] || 0) > 0);
+    }
+
+    const STAT_FILTER_TOGGLES = {};
+    for (const fam of STAT_FILTER_FAMILIES) {
+        for (const st of STAT_FILTER_STATS) {
+            STAT_FILTER_TOGGLES[fam.id + st.key] = {
+                label: `${fam.label} ${st.label}`,
+                aliases: fam.names.flatMap((f) => st.aliases.map((a) => `${f} ${a}`)),
+                desc: `${fam.verb} ${st.key === 'stats' ? 'stats' : st.label}`,
+                test: fam.z
+                ? (m) => zBoostHas(m, st.key)
+                : (m) => boostHas(moveBoostEffects(m)[fam.who], fam.sign, st.key),
+            };
+        }
+    }
+    Object.assign(MOVE_TOGGLES, STAT_FILTER_TOGGLES);
+
+    // ---------- everything else ----------
+
+    Object.assign(MOVE_TOGGLES, {
+        bullet: {
+            label: 'Bullet', aliases: ['bullets', 'ballistic', 'bulletproof'],
+            desc: 'Ball and bomb moves (Bulletproof)',
+            test: (m) => moveFlag(m, 'bullet'),
+        },
+        pulse: {
+            label: 'Pulse', aliases: ['pulses', 'megalauncher'],
+            desc: 'Pulse and aura moves (Mega Launcher)',
+            test: (m) => moveFlag(m, 'pulse'),
+        },
+        powder: {
+            label: 'Powder', aliases: ['powders', 'overcoat', 'safetygoggles'],
+            desc: 'Powder and spore moves (Overcoat)',
+            test: (m) => moveFlag(m, 'powder'),
+        },
+        bite: {
+            label: 'Bite', aliases: ['bites', 'biting', 'strongjaw', 'jaw', 'fang'],
+            desc: 'Biting moves (Strong Jaw)',
+            test: (m) => moveFlag(m, 'bite'),
+        },
+        wind: {
+            label: 'Wind', aliases: ['winds', 'windrider', 'windpower'],
+            desc: 'Wind moves (Wind Rider, Wind Power)',
+            test: (m) => moveFlag(m, 'wind'),
+        },
+        assist: {
+            label: 'Assist Skips', aliases: ['assist', 'noassist', 'assistfail', 'skipassist'],
+            desc: 'Moves Assist cannot call',
+            test: (m) => moveFlag(m, 'noassist'),
+        },
+        removal: {
+            label: 'Removal', aliases: ['hazardremoval', 'removehazards', 'defog', 'rapidspin', 'spinner'],
+            desc: 'Removes entry hazards',
+            test: (m) => REMOVAL_MOVES.has(m.id),
+        },
+        hazards: {
+            label: 'Hazards', aliases: ['hazard', 'entryhazards', 'spikes', 'rocks', 'stealthrock', 'stickyweb'],
+            desc: 'Sets entry hazards',
+            test: (m) => HAZARD_MOVES.has(m.id) || HAZARD_CONDITIONS.has(moveField(m, 'sideCondition')),
+        },
+        pivot: {
+            label: 'Pivot', aliases: ['pivots', 'uturn', 'voltswitch', 'switchout', 'selfswitch', 'batonpass'],
+            desc: 'Switches the user out after use',
+            test: (m) => PIVOT_MOVES.has(m.id) || !!moveField(m, 'selfSwitch'),
+        },
+        trapping: {
+            label: 'Trapping', aliases: ['trap', 'traps', 'trapped', 'binding', 'bind', 'partiallytrapped'],
+            desc: 'Prevents the target from switching',
+            test: (m) => TRAP_MOVES.has(m.id) || TRAP_VOLATILES.has(moveField(m, 'volatileStatus')),
+        },
+        redirection: {
+            label: 'Redirection', aliases: ['redirect', 'redirects', 'followme', 'ragepowder', 'spotlight'],
+            desc: 'Draws attacks toward the user',
+            test: (m) => REDIRECT_MOVES.has(m.id),
+        },
+        selfko: {
+            label: 'Self KO', aliases: ['suicide', 'selfdestruct', 'explosion', 'faint', 'sacrifice', 'kamikaze'],
+            desc: 'The user faints',
+            test: (m) => SELF_KO_MOVES.has(m.id) || !!moveField(m, 'selfdestruct'),
+        },
+        burn: {
+            label: 'Burns', aliases: ['burn', 'brn', 'burned', 'burning'],
+            desc: 'Can burn the target',
+            test: (m) => inflictedStatuses(m).has('burn'),
+        },
+        paralyze: {
+            label: 'Paralyzes', aliases: ['paralyze', 'paralysis', 'paralyse', 'para', 'paras', 'par'],
+            desc: 'Can paralyze the target',
+            test: (m) => inflictedStatuses(m).has('paralyze'),
+        },
+        sleep: {
+            label: 'Sleeps', aliases: ['sleep', 'slp', 'sleepy'],
+            desc: 'Can put the target to sleep',
+            test: (m) => inflictedStatuses(m).has('sleep'),
+        },
+        poison: {
+            label: 'Poisons', aliases: ['poison', 'psn', 'tox', 'toxic', 'poisoning'],
+            desc: 'Can poison or badly poison the target',
+            test: (m) => inflictedStatuses(m).has('poison'),
+        },
+        freeze: {
+            label: 'Freezes', aliases: ['freeze', 'frz', 'frozen'],
+            desc: 'Can freeze the target',
+            test: (m) => inflictedStatuses(m).has('freeze'),
+        },
+        curestatus: {
+            label: 'Cures Status', aliases: ['cure', 'cures', 'statusheal', 'healstatus', 'cleanse', 'refresh'],
+            desc: 'Cures status conditions',
+            test: (m) => CURE_STATUS_MOVES.has(m.id),
+        },
+        // Swaps the movepool for the National Dex one (see patchNatdexMoveSearch).
+        natdex: {
+            label: 'National Dex', aliases: ['nationaldex', 'natdexmoves', 'natdexmovepool'],
+            desc: 'Use the National Dex movepool',
+            noNegate: true,
+            test: () => true,
+        },
+    });
+
+    // Bypasses Substitute (Infiltrator, sound moves, Transform, etc. carry the flag)
+    MOVE_TOGGLES.bypass = {
+        label: 'Bypasses Substitute', aliases: [],
+        desc: 'Ignores the target\'s Substitute',
+        test: (m) => moveFlag(m, 'bypasssub'),
+    };
+
+    // Stricter matching: label + key + at most a couple keywords per filter.
+    const MOVE_TOGGLE_KEYWORDS = {
+        bullet: ['bulletproof'],
+        pulse: ['megalauncher'],
+        powder: ['overcoat'],
+        bite: ['strongjaw'],
+        wind: ['windrider'],
+        assist: ['noassist'],
+        removal: ['defog'],
+        hazards: [],
+        pivot: ['uturn'],
+        trapping: ['trap'],
+        redirection: ['redirect'],
+        selfko: ['suicide', 'selfdestruct'],
+        burn: [],
+        paralyze: ['para'],
+        sleep: [],
+        poison: ['toxic'],
+        freeze: [],
+        curestatus: [],
+        natdex: ['nationaldex'],
+        bypass: ['bypass', 'infiltrator'],
+    };
+    for (const [key, aliases] of Object.entries(MOVE_TOGGLE_KEYWORDS)) {
+        MOVE_TOGGLES[key].aliases = aliases;
+        delete MOVE_TOGGLES[key].__names; // drop the cached name list
+    }
+
+    // Stat filters: only "<family> <short stat>" ("boosts atk", "lowers target spe", ...).
+    const SHORT_STAT_KEYWORDS = {
+        atk: ['atk'], def: ['def'], spa: ['spa', 'spatk'], spd: ['spd', 'spdef'],
+        spe: ['spe'], accuracy: ['acc'], evasion: ['eva'], stats: [],
+    };
+    for (const fam of STAT_FILTER_FAMILIES) {
+        for (const st of STAT_FILTER_STATS) {
+            const t = MOVE_TOGGLES[fam.id + st.key];
+            t.aliases = SHORT_STAT_KEYWORDS[st.key].map((a) => `${fam.label} ${a}`);
+            delete t.__names;
+        }
+    }
+
+    // ---------- National Dex movepool ----------
+
+    const NATDEX_MOVE_FILTER_TYPE = MOVE_FILTER_TYPE + 'natdex';
+    const NATDEX_SKIP_NONSTANDARD = new Set(['LGPE', 'Unobtainable', 'CAP', 'Gigantamax']);
+
+    function natdexMoveIds(dex, species) {
+        const T = window.BattleTeambuilderTable || {};
+        const tables = [T.learnsets];
+        for (let g = 1; g <= 9; g++) tables.push(T['gen' + g]?.learnsets);
+
+        // species + base formes + battleOnly sources + every pre-evolution
+        const keys = [];
+        const seen = new Set();
+        let cur = species;
+        while (cur?.exists && !seen.has(cur.id)) {
+            seen.add(cur.id);
+            keys.push(cur.id, toID(cur.baseSpecies || cur.name));
+            for (const b of [].concat(cur.battleOnly || [])) keys.push(toID(b));
+            cur = cur.prevo ? dex.species.get(cur.prevo) : null;
+        }
+
+        const ids = new Set();
+        for (const key of keys) {
+            for (const table of tables) {
+                const ls = table?.[key];
+                if (!ls) continue;
+                for (const [moveId, entry] of Object.entries(ls)) if (entry) ids.add(moveId);
+            }
+        }
+
+        return [...ids].filter((id) => {
+            const move = dex.moves.get(id);
+            return move?.exists && !move.isZ && !move.isMax && !NATDEX_SKIP_NONSTANDARD.has(move.isNonstandard);
+        });
+    }
+
+    // Same header placement as the Alphabet Cup patch: new moves go under the
+    // native "Moves" / "Usually useless moves" headers.
+    function addMovesToResults(search, results, species, newIds) {
+        let usableHeader = null;
+        let uselessHeader = null;
+        let lastHeader = null;
+        let seenMove = false;
+
+        for (const r of results) {
+            if (r[0] === 'header') {
+                lastHeader = r;
+                if (!uselessHeader && /useless/i.test(String(r[1])) && !/z-move/i.test(String(r[1]))) uselessHeader = r;
+            } else if (r[0] === 'move' && !seenMove) {
+                seenMove = true;
+                usableHeader = lastHeader;
+            }
+        }
+        if (usableHeader && usableHeader === uselessHeader) usableHeader = ['header', 'Moves'];
+
+        const allIds = results.filter((r) => r[0] === 'move').map((r) => r[1]).concat(newIds);
+        const isUsable = (id) => {
+            if (typeof search.moveIsNotUseless !== 'function') return true;
+            try {
+                return !!search.moveIsNotUseless(id, species, allIds, search.set);
+            } catch (e) {
+                return true;
+            }
+        };
+
+        const usable = [];
+        const useless = [];
+        for (const id of newIds) (isUsable(id) ? usable : useless).push(['move', id]);
+
+        const extra = [];
+        if (usable.length) extra.push(...(usableHeader ? [usableHeader] : []), ...usable);
+        if (useless.length) extra.push(uselessHeader || ['header', 'Usually useless moves'], ...useless);
+
+        return extra.length ? mergeMoveResults(results, extra) : results;
+    }
+
+    function patchNatdexMoveSearch() {
+        const proto = window.BattleMoveSearch?.prototype;
+
+        // Rebuild the cached base results whenever the chip is added/removed.
+        const a = patchMethod(proto, 'getResults', '__qolNatdexMoveResultsPatched', (original) =>
+            function (filters, ...rest) {
+                const on = Array.isArray(filters) && filters.some((f) => f[0] === NATDEX_MOVE_FILTER_TYPE);
+                if (on !== !!this.__qolNatdexMoves) {
+                    this.__qolNatdexMoves = on;
+                    this.baseResults = null;
+                    this.baseIllegalResults = null;
+                    this.illegalReasons = null;
+                }
+                return original.call(this, filters, ...rest);
+            }
+        );
+
+        const b = patchMethod(proto, 'getBaseResults', '__qolNatdexMovePatched', (original) =>
+            function () {
+                const results = original.call(this);
+                if (!this.__qolNatdexMoves || !this.species) return results;
+
+                const species = this.dex.species.get(this.species);
+                if (!species?.exists) return results;
+
+                const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
+                const add = natdexMoveIds(this.dex, species).filter((id) => !have.has(id));
+                return add.length ? addMovesToResults(this, results, species, add) : results;
+            }
+        );
+
+        return a && b;
+    }
+
+
 
     // ---------- coverage ----------
 
@@ -3508,21 +3887,32 @@
         return eff > 1;
     }
 
-    // ---------- suggestions / rows ----------
-
     const isMoveCustomFilter = (t) =>
     typeof t === 'string' && (isNegatedFilterType(t) || t.startsWith(MOVE_FILTER_TYPE));
 
-    function moveToggleSuggestions(query, minLen = 2) {
+        function moveToggleNames(key, def) {
+        return def.__names || (def.__names = [key, def.label, ...def.aliases].map(toSearchId));
+    }
+
+    function moveToggleSuggestions(query, minLen = 3, negated = false) {
         const q = toSearchId(query);
         if (q.length < minLen) return [];
 
-        const rows = [];
+        const scored = [];
         for (const [key, def] of Object.entries(MOVE_TOGGLES)) {
-            const names = [key, def.label, ...def.aliases].map(toSearchId);
-            if (names.some((n) => n.startsWith(q))) rows.push(['ability', MOVE_ROW_PREFIX + key, 0, 0]);
+            if (negated && def.noNegate) continue;
+            let score = Infinity;
+            for (const n of moveToggleNames(key, def)) {
+                if (n === q) { score = 0; break; }
+                if (n.startsWith(q)) score = 1;
+            }
+            if (score < Infinity) scored.push({key, score});
         }
-        return rows;
+
+        scored.sort((a, b) => a.score - b.score); // stable: exact matches first
+        return scored
+            .slice(0, q ? 12 : Infinity)
+            .map((s) => ['ability', MOVE_ROW_PREFIX + s.key, 0, 0]);
     }
 
     // Parses a pseudo row id (case-insensitive) into everything needed to
@@ -3582,6 +3972,7 @@
             return custom.every(([rawType, value]) => {
                 const negated = isNegatedFilterType(rawType);
                 const type = negated ? baseFilterType(rawType) : rawType;
+                if (type === NATDEX_MOVE_FILTER_TYPE) return true; // only swaps the pool, never rejects
 
                 let matches;
                 if (type.startsWith(MOVE_FILTER_TYPE)) {
@@ -3656,7 +4047,7 @@
                 ...['physical', 'special', 'status'].map((c) => ['category', c, 0, 0]),
             ];
 
-            this.results = [['header', 'Not'], ...moveToggleSuggestions(body, 0), ...native];
+            this.results = [['header', 'Not'], ...moveToggleSuggestions(body, 0, true), ...native];
             this.exactMatch = true;
             return this.results;
         }
@@ -3878,6 +4269,7 @@
             patchEffectivenessSetType(),
             patchEngineSearch(),
             patchMoveFilters(),
+            patchNatdexMoveSearch(),
 
             patchCrossEvolutionMoveSearch(),
             patchCrossEvolutionAbilitySearch(),
