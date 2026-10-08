@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      7.6.0
+// @version      8.0.0
 // @description  Makes the Showdown Teambuilder better for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @grant        none
@@ -42,7 +42,7 @@
     const capitalize = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1).toLowerCase();
     const toSearchId = (text) => String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     const dropEmptyHeaders = (rows) =>
-        rows.filter((row, i) => row[0] !== 'header' || (rows[i + 1] && rows[i + 1][0] !== 'header'));
+    rows.filter((row, i) => row[0] !== 'header' || (rows[i + 1] && rows[i + 1][0] !== 'header'));
 
     const MOD = {
         TIER_SHIFT: 'tierShift',
@@ -93,7 +93,7 @@
     }
 
     const isFusionMod = (mod) =>
-        mod === MOD.CROSS_EVOLUTION || mod === MOD.FRANTIC_FUSIONS || mod === MOD.INHERITANCE;
+    mod === MOD.CROSS_EVOLUTION || mod === MOD.FRANTIC_FUSIONS || mod === MOD.INHERITANCE;
     const isCrossFormat = (format) => fmtHas(format, 'crossevolution', 'franticfusions', 'inheritance');
 
     // ====================================================================
@@ -102,7 +102,7 @@
 
     const getTeambuilderRoom = () => window.app?.rooms?.teambuilder || null;
     const getActiveTeambuilderRoom = () =>
-        getTeambuilderRoom() || (window.room?.curTeam ? window.room : null);
+    getTeambuilderRoom() || (window.room?.curTeam ? window.room : null);
     const getEngine = () => getTeambuilderRoom()?.search?.engine;
 
     // The mod for the format being edited (Godly Gift is detected separately
@@ -642,58 +642,58 @@
 
     function patchServerReceive() {
         return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
-            function (data) {
-                let payload = data;
+                           function (data) {
+            let payload = data;
 
-                try {
-                    if (typeof data === 'string' && data.includes('/raw ')) {
-                        let modified = false;
+            try {
+                if (typeof data === 'string' && data.includes('/raw ')) {
+                    let modified = false;
 
-                        const kept = data.split('\n').filter((line) => {
-                            const match = line.includes('/raw ') && line.match(/\/raw (.*)/s);
-                            if (!match) return true;
+                    const kept = data.split('\n').filter((line) => {
+                        const match = line.includes('/raw ') && line.match(/\/raw (.*)/s);
+                        if (!match) return true;
 
-                            const suppress = consumeRawLine(match[1]);
-                            if (suppress) modified = true;
-                            return !suppress;
-                        });
+                        const suppress = consumeRawLine(match[1]);
+                        if (suppress) modified = true;
+                        return !suppress;
+                    });
 
-                        if (modified) payload = kept.join('\n');
-                    }
-                } catch (e) {
-                    console.error(LOG, 'Failed to parse server data:', e);
-                    payload = data;
+                    if (modified) payload = kept.join('\n');
                 }
-
-                if (payload === '') return;
-                return original.call(this, payload);
+            } catch (e) {
+                console.error(LOG, 'Failed to parse server data:', e);
+                payload = data;
             }
-        );
+
+            if (payload === '') return;
+            return original.call(this, payload);
+        }
+                          );
     }
 
     // Tier Shift AAA: ban list applied on top of the Gen 9 pool.
     function patchTsaSearchLegality() {
         return patchMethod(window.BattlePokemonSearch?.prototype, 'getBaseResults', '__qolPatched', (original) =>
-            function () {
-                if (!fmtHas(this.format, 'tiershiftaaa')) return original.call(this);
+                           function () {
+            if (!fmtHas(this.format, 'tiershiftaaa')) return original.call(this);
 
-                requestBanlist('tsa'); // no-op once loaded/requested
+            requestBanlist('tsa'); // no-op once loaded/requested
 
-                // The base legal pool must come from Gen 9, not TSA's stale format data.
-                const savedFormat = this.format;
-                this.format = 'gen9';
-                const gen9Results = original.call(this);
-                this.format = savedFormat;
+            // The base legal pool must come from Gen 9, not TSA's stale format data.
+            const savedFormat = this.format;
+            this.format = 'gen9';
+            const gen9Results = original.call(this);
+            this.format = savedFormat;
 
-                return gen9Results.filter((result) => {
-                    if (result[0] !== this.searchType) return true;
-                    if (tsaBanlist.has(result[1])) return false;
+            return gen9Results.filter((result) => {
+                if (result[0] !== this.searchType) return true;
+                if (tsaBanlist.has(result[1])) return false;
 
-                    // Arceus is banned as a species, so every forme is banned.
-                    return this.dex.species.get(result[1])?.baseSpecies !== 'Arceus';
-                });
-            }
-        );
+                // Arceus is banned as a species, so every forme is banned.
+                return this.dex.species.get(result[1])?.baseSpecies !== 'Arceus';
+            });
+        }
+                          );
     }
 
     // ====================================================================
@@ -770,7 +770,7 @@
 
     // Stats used when sorting/rendering the Pokémon search list.
     const searchListStats = (species, mod) =>
-        SPECIES_STAT_MODIFIERS[mod]?.(species) || species.baseStats;
+    SPECIES_STAT_MODIFIERS[mod]?.(species) || species.baseStats;
 
     function speciesModBaseStats(mod, dex, set) {
         const species = dex?.species?.get(set?.species);
@@ -897,7 +897,7 @@
         if (special) return special;
 
         const formeName =
-            (item.megaStone && Object.values(item.megaStone)[0]) || item.itemUser?.[0];
+              (item.megaStone && Object.values(item.megaStone)[0]) || item.itemUser?.[0];
         if (!formeName) return null;
 
         const formeSpecies = dex.species.get(formeName);
@@ -909,8 +909,8 @@
             baseSpecies = dex.species.get('Zygarde-Complete'); // MnM's base forme
         } else if (formeSpecies.isMega && formeSpecies.battleOnly) {
             const battleOnly = Array.isArray(formeSpecies.battleOnly)
-                ? formeSpecies.battleOnly[0]
-                : formeSpecies.battleOnly;
+            ? formeSpecies.battleOnly[0]
+            : formeSpecies.battleOnly;
             baseSpecies = dex.species.get(battleOnly);
         } else if (formeSpecies.baseSpecies) {
             baseSpecies = dex.species.get(formeSpecies.baseSpecies);
@@ -1049,7 +1049,7 @@
 
         const suggested = room.$chart.find('.statform .suggested');
         const hasGuessedSpread =
-            suggested.length && !suggested.text().includes('Please choose 4 moves');
+              suggested.length && !suggested.text().includes('Please choose 4 moves');
 
         note.css('top', hasGuessedSpread ? '318px' : '300px');
     }
@@ -1276,8 +1276,8 @@
 
         const baseTypes = dex.species.get(set.species)?.types || [];
         const types = mod === MOD.CROSS_EVOLUTION
-            ? (crossEvolutionTypes(dex, liveSet) || baseTypes)
-            : baseTypes;
+        ? (crossEvolutionTypes(dex, liveSet) || baseTypes)
+        : baseTypes;
 
         room.$('.setcell-typeicons').html(typeIconsHtml(types));
 
@@ -1312,8 +1312,8 @@
             if (getActiveTeambuilderRoom() !== room || !isFusionMod(getActiveMod(room))) return;
 
             const name = nickname !== null
-                ? String(nickname).trim()
-                : String(room.curSet?.name || '').trim();
+            ? String(nickname).trim()
+            : String(room.curSet?.name || '').trim();
 
             if (name === fusionLastNickname) return;
             fusionLastNickname = name;
@@ -1734,8 +1734,8 @@
         };
 
         const nativeRows = isPoke
-            ? abilityRows(Object.values(search.dex.species.get(search.species)?.abilities || {}))
-            : [];
+        ? abilityRows(Object.values(search.dex.species.get(search.species)?.abilities || {}))
+        : [];
         const suggestedRows = abilityRows(SUGGESTED_ABILITIES[toID(search.species)] || []);
         if (!nativeRows.length && !suggestedRows.length) return results;
 
@@ -1787,7 +1787,7 @@
         if (isInheritance) {
             results = fusion
                 ? withSpeciesOverrides(search.dex, fusion.species, {abilities: copy(fusion.donor.abilities)}, base)
-                : base();
+            : base();
         } else {
             results = base();
             if (fusion) extraIds = Object.values(fusion.donor.abilities).filter(Boolean).map((a) => toID(a));
@@ -1877,22 +1877,22 @@
 
     function patchAbilitySearchResults() {
         return patchMethod(window.BattleAbilitySearch?.prototype, 'getBaseResults', '__qolAbilityProvidersPatched', (original) =>
-            function () {
-                const base = () => original.call(this);
-                const provider = ABILITY_PROVIDERS.find((p) => p.match(this.format));
-                return provider ? provider.run(this, base) : base();
-            }
-        );
+                           function () {
+            const base = () => original.call(this);
+            const provider = ABILITY_PROVIDERS.find((p) => p.match(this.format));
+            return provider ? provider.run(this, base) : base();
+        }
+                          );
     }
 
     function patchMoveSearchResults() {
         return patchMethod(window.BattleMoveSearch?.prototype, 'getBaseResults', '__qolMoveProvidersPatched', (original) =>
-            function () {
-                const base = () => augmentWithNatdexMoves(this, original.call(this));
-                const provider = MOVE_PROVIDERS.find((p) => p.match(this.format));
-                return provider ? provider.run(this, base) : base();
-            }
-        );
+                           function () {
+            const base = () => augmentWithNatdexMoves(this, original.call(this));
+            const provider = MOVE_PROVIDERS.find((p) => p.match(this.format));
+            return provider ? provider.run(this, base) : base();
+        }
+                          );
     }
 
     // ---------- cached-result invalidation ----------
@@ -1921,13 +1921,13 @@
 
     function patchSearchCacheInvalidation() {
         const patch = (proto, extra) =>
-            patchMethod(proto, 'getResults', '__qolCacheInvalidationPatched', (original) =>
-                function (filters, ...rest) {
-                    bustFusionCache(this);
-                    if (extra) extra(this, filters);
-                    return original.call(this, filters, ...rest);
-                }
-            );
+        patchMethod(proto, 'getResults', '__qolCacheInvalidationPatched', (original) =>
+                    function (filters, ...rest) {
+            bustFusionCache(this);
+            if (extra) extra(this, filters);
+            return original.call(this, filters, ...rest);
+        }
+                   );
 
         // Non-short-circuiting on purpose: patch both.
         return [
@@ -1952,10 +1952,9 @@
 
     const ALLOWED_POKEMON_FILTER_TYPES = [
         'type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
-        'natdex', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'into', 'from',
+        'natdex', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'hazards', 'into', 'from',
         'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution',
     ];
-
     // Toggle filters take no argument: typing the keyword and picking the
     // single suggestion adds/removes the chip. Value = display label.
     const CUSTOM_TOGGLE_FILTERS = {
@@ -1970,7 +1969,10 @@
         mythical: 'Mythical',
         paradox: 'Paradox',
         eeveelution: 'Eeveelution',
+        removal: 'Removal',
+        hazards: 'Hazards',
     };
+
 
     // Namespaced pseudo-ids so suggestion rows can't collide with real ids.
     const CUSTOM_TOGGLE_PREFIX = 'is ';
@@ -2008,11 +2010,10 @@
     };
 
     const speciesInGroup = (species, kind) =>
-        !!species && (SPECIES_GROUPS[kind]?.has(toID(species.baseSpecies || species.name)) || false);
+    !!species && (SPECIES_GROUPS[kind]?.has(toID(species.baseSpecies || species.name)) || false);
 
-    // Shared move lists (also used by the move filters). Life Dew is
-    // intentionally not counted as recovery.
     const REMOVAL_MOVE_IDS = 'defog rapidspin mortalspin courtchange tidyup';
+    const HAZARD_MOVE_IDS = 'stealthrock spikes toxicspikes stickyweb ceaselessedge stoneaxe';
     const PIVOT_MOVE_IDS = 'uturn voltswitch flipturn partingshot chillyreception teleport shedtail';
 
     const TOGGLE_MOVE_LISTS = {
@@ -2022,6 +2023,8 @@
         ),
         pivot: listOf(PIVOT_MOVE_IDS),
         removal: listOf(REMOVAL_MOVE_IDS),
+        hazards: listOf(HAZARD_MOVE_IDS),
+
     };
 
     // Per-dex cache so we don't rescan the whole movedex per search row.
@@ -2034,12 +2037,12 @@
 
         if (kind === 'priority') {
             const all = typeof dex?.moves?.all === 'function'
-                ? dex.moves.all()
-                : Object.values(window.BattleMovedex || {});
+            ? dex.moves.all()
+            : Object.values(window.BattleMovedex || {});
 
             return all
                 .filter((move) =>
-                    move?.exists && move.category !== 'Status' && move.id !== 'bide' && move.priority > 0)
+                        move?.exists && move.category !== 'Status' && move.id !== 'bide' && move.priority > 0)
                 .map((move) => move.id);
         }
 
@@ -2075,8 +2078,7 @@
             case 'pivot':
             case 'priority':
             case 'removal':
-                return getCustomToggleMoveIds(ctx.dex, kind)
-                    .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
+            case 'hazards':
             default:
                 return true;
         }
@@ -2085,7 +2087,7 @@
     // A native suggestion row colliding with one of our keywords ("natdex" is
     // also a real tier/format id) must be dropped from native results.
     const isReservedToggleCollisionRow = (row) =>
-        !!row && Object.prototype.hasOwnProperty.call(CUSTOM_TOGGLE_FILTERS, toSearchId(row[1]));
+    !!row && Object.prototype.hasOwnProperty.call(CUSTOM_TOGGLE_FILTERS, toSearchId(row[1]));
 
     // Suggestion rows for toggles that loosely prefix-match the query. Reuses
     // the 'ability' row type; the displayed text is swapped in by the
@@ -2213,29 +2215,29 @@
 
     function patchPokemonFilter() {
         return patchMethod(window.BattlePokemonSearch?.prototype, 'filter', '__qolEffectivenessPatched', (original) =>
-            function (row, filters) {
-                if (!filters?.length) return original.call(this, row, filters);
-                if (row[0] !== 'pokemon') return true;
+                           function (row, filters) {
+            if (!filters?.length) return original.call(this, row, filters);
+            if (row[0] !== 'pokemon') return true;
 
-                const species = this.dex.species.get(row[1]);
-                if (!species?.exists) return false;
+            const species = this.dex.species.get(row[1]);
+            if (!species?.exists) return false;
 
-                // Each filter is tested on its own; a negated one flips the
-                // result. Everything must hold at once.
-                for (const [rawType, target] of filters) {
-                    const negated = isNegatedFilterType(rawType);
-                    const type = baseFilterType(rawType);
+            // Each filter is tested on its own; a negated one flips the
+            // result. Everything must hold at once.
+            for (const [rawType, target] of filters) {
+                const negated = isNegatedFilterType(rawType);
+                const type = baseFilterType(rawType);
 
-                    // natdex only widens the pool; it never rejects a row.
-                    if (type === 'natdex') continue;
+                // natdex only widens the pool; it never rejects a row.
+                if (type === 'natdex') continue;
 
-                    const matches = pokemonFilterMatches(this, original, row, species, type, target);
-                    if (negated ? matches : !matches) return false;
-                }
-
-                return true;
+                const matches = pokemonFilterMatches(this, original, row, species, type, target);
+                if (negated ? matches : !matches) return false;
             }
-        );
+
+            return true;
+        }
+                          );
     }
 
     // ---------- Pokémon search results: one getResults wrapper ----------
@@ -2246,20 +2248,33 @@
         const id = genericBanFormatId(search.format);
         if (!id) return results;
 
-        const entry = requestGenericBanlist(id); // no-op after the first call
-        if (!entry.loaded || hasNatdex) return results; // "natdex" = complete dex
+        const entry = requestGenericBanlist(id);
+        if (!entry.loaded || hasNatdex) return results;
 
         const bans = entry.bans;
-        let out = results.filter(
-            (row) => row[0] !== 'pokemon' || !isBannedByList(bans, search.dex.species.get(row[1]))
-        );
 
-        // Pokebilities: a native banned ability makes the mon illegal.
-        if (fmtHas(search.format, 'pokebilities') && bans.abilities.size) {
-            out = moveNativeBannedToIllegal(search, out, bans);
+        // Pokébilities formats need native legality handling.
+        // Do not generically remove species/forms based on /tier.
+        if (fmtHas(search.format, 'pokebilities')) {
+            if (bans.abilities.size) {
+                const out = moveNativeBannedToIllegal(search, results, bans);
+                if (out.length === results.length && out.every((r, i) => r === results[i])) {
+                    return results;
+                }
+                return dropEmptyHeaders(out);
+            }
+            return results;
         }
 
-        if (out.length === results.length && out.every((r, i) => r === results[i])) return results;
+        let out = results.filter(
+            (row) => row[0] !== 'pokemon' ||
+            !isBannedByList(bans, search.dex.species.get(row[1]))
+        );
+
+        if (out.length === results.length && out.every((r, i) => r === results[i])) {
+            return results;
+        }
+
         return dropEmptyHeaders(out);
     }
 
@@ -2293,7 +2308,7 @@
 
         return illegalIdx < 0
             ? legal.concat([['header', TL(['Illegal Pokémon'])], ...moved])
-            : legal.concat(moved);
+        : legal.concat(moved);
     }
 
     // Godly Gift: other Restricted mons move to an "Illegal results" section.
@@ -2321,42 +2336,42 @@
 
     function patchPokemonSearchResults() {
         return patchMethod(window.BattlePokemonSearch?.prototype, 'getResults', '__qolPokemonResultsPatched', (original) =>
-            function (filters, sortCol, reverseSort) {
-                if (this.searchType !== 'pokemon') return original.call(this, filters, sortCol, reverseSort);
+                           function (filters, sortCol, reverseSort) {
+            if (this.searchType !== 'pokemon') return original.call(this, filters, sortCol, reverseSort);
 
-                // Remember the active into/from chips for sort().
-                const findChip = (kind) => {
-                    const f = Array.isArray(filters) ? filters.find((e) => e[0] === kind) : null;
-                    return f ? f[1] : null;
-                };
-                this.__qolIntoId = findChip('into');
-                this.__qolFromId = findChip('from');
+            // Remember the active into/from chips for sort().
+            const findChip = (kind) => {
+                const f = Array.isArray(filters) ? filters.find((e) => e[0] === kind) : null;
+                return f ? f[1] : null;
+            };
+            this.__qolIntoId = findChip('into');
+            this.__qolFromId = findChip('from');
 
-                // "natdex" chip: use the complete Pokédex as the legal pool
-                // (includes mons the format normally considers illegal).
-                const hasNatdex =
-                    Array.isArray(filters) && filters.some(([rawType]) => baseFilterType(rawType) === 'natdex');
+            // "natdex" chip: use the complete Pokédex as the legal pool
+            // (includes mons the format normally considers illegal).
+            const hasNatdex =
+                  Array.isArray(filters) && filters.some(([rawType]) => baseFilterType(rawType) === 'natdex');
 
-                if (hasNatdex) {
-                    this.baseResults = this.getDefaultResults();
-                    this.baseIllegalResults = [];
-                    this.illegalReasons = {};
-                    this.__qolNatdexPoolActive = true;
-                } else if (this.__qolNatdexPoolActive) {
-                    // Filter removed: drop the widened cache so real legality is rebuilt.
-                    this.__qolNatdexPoolActive = false;
-                    this.baseResults = null;
-                    this.baseIllegalResults = null;
-                    this.illegalReasons = null;
-                }
-
-                let results = original.call(this, filters, sortCol, reverseSort);
-                if (!Array.isArray(results)) return results;
-
-                results = applyGenericBans(this, results, hasNatdex);
-                return applyGodlyGiftLegality(this, results);
+            if (hasNatdex) {
+                this.baseResults = this.getDefaultResults();
+                this.baseIllegalResults = [];
+                this.illegalReasons = {};
+                this.__qolNatdexPoolActive = true;
+            } else if (this.__qolNatdexPoolActive) {
+                // Filter removed: drop the widened cache so real legality is rebuilt.
+                this.__qolNatdexPoolActive = false;
+                this.baseResults = null;
+                this.baseIllegalResults = null;
+                this.illegalReasons = null;
             }
-        );
+
+            let results = original.call(this, filters, sortCol, reverseSort);
+            if (!Array.isArray(results)) return results;
+
+            results = applyGenericBans(this, results, hasNatdex);
+            return applyGodlyGiftLegality(this, results);
+        }
+                          );
     }
 
     // ====================================================================
@@ -2374,12 +2389,19 @@
     // ---------- raw move data helpers ----------
 
     // Client Move objects don't carry every field, so fall back to raw dex data.
-    const rawMove = (move, dex) => move?.id && dex?.moves?.get ? dex.moves.get(move.id) : (window.BattleMovedex?.[move?.id] || {});
+    // Client Move objects drop fields like `boosts` and `self`, so prefer the raw
+// BattleMovedex entry and only use the Move object if there isn't one.
+    const rawMove = (move, dex) => {
+        const id = move?.id;
+        return (id && window.BattleMovedex?.[id]) ||
+            (id && dex?.moves?.get?.(id)) ||
+            {};
+    };
     const moveField = (move, key, dex) => move?.[key] ?? rawMove(move, dex)[key];
     const moveFlag = (move, flag) => !!moveField(move, 'flags')?.[flag];
     const isDamaging = (move) => move.category !== 'Status';
     const secondariesOf = (move) =>
-        [].concat(moveField(move, 'secondaries') || [], moveField(move, 'secondary') || []).filter(Boolean);
+    [].concat(moveField(move, 'secondaries') || [], moveField(move, 'secondary') || []).filter(Boolean);
     const hasSecondary = (move) => secondariesOf(move).length > 0;
 
     // The mon's current typing, including Camomons / Mix and Mega / Cross Evolution.
@@ -2420,6 +2442,13 @@
         'aromatherapy healbell refresh rest junglehealing lunarblessing takeheart sparklingaria ' +
         'smellingsalts wakeupslap purify healingwish lunardance'
     );
+    const SPREAD_TARGETS = new Set(['allAdjacentFoes', 'allAdjacent']);
+    const FOE_TARGETS = new Set(['normal', 'any', 'adjacentFoe', 'allAdjacentFoes', 'allAdjacent']);
+    const isSpreadMove = (m) => SPREAD_TARGETS.has(moveField(m, 'target'));
+    // Hits foes AND isn't stopped by Protect (no `protect` flag, or breaksProtect like Feint/Phantom Force)
+    const bypassesProtect = (m) =>
+    FOE_TARGETS.has(moveField(m, 'target')) &&
+          (!moveFlag(m, 'protect') || !!moveField(m, 'breaksProtect'));
 
     // ---------- status infliction ----------
 
@@ -2446,52 +2475,53 @@
 
     const BOOST_STAT_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
 
-    const SELF_BOOST_TARGETS = new Set([
-        'self',
-        'allies',
-        'allySide',
-        'adjacentAllyOrSelf',
-    ]);
+    const SELF_BOOST_TARGETS = new Set(['self', 'allies', 'allySide', 'adjacentAlly', 'adjacentAllyOrSelf']);
 
+    const all = (n) => ({atk: n, def: n, spa: n, spd: n, spe: n});
+
+    // Stat changes on the user (or an ally, e.g. Coaching / Aromatic Mist)
     const BOOST_OVERRIDES = {
-        acidarmor: {def: 2},
-        agility: {spe: 2},
-        autotomize: {spe: 2},
-        bellydrum: {atk: 12},
-        bulkup: {atk: 1, def: 1},
-        calmmind: {spa: 1, spd: 1},
-        chargebeam: {spa: 1},
-        clangoroussoul: {atk: 1, def: 1, spa: 1, spd: 1, spe: 1},
-        coil: {atk: 1, def: 1, accuracy: 1},
-        cosmicpower: {def: 1, spd: 1},
-        curse: {atk: 1, def: 1, spe: -1},
-        dragondance: {atk: 1, spe: 1},
-        flamecharge: {spe: 1},
-        filletaway: {atk: 1, spa: 1, spe: 1},
-        geomancy: {spa: 2, spd: 2, spe: 2},
-        growth: {atk: 1, spa: 1},
-        happyhour: {},
-        honeclaws: {atk: 1, accuracy: 1},
-        howl: {atk: 1},
-        irondefense: {def: 2},
-        meditate: {atk: 1},
-        nastyplot: {spa: 2},
-        noretreat: {atk: 1, def: 1, spa: 1, spd: 1, spe: 1},
-        poweruppunch: {atk: 1},
-        quiverdance: {spa: 1, spd: 1, spe: 1},
-        rockpolish: {spe: 2},
-        sharpen: {atk: 1},
-        shellsmash: {atk: 2, def: -1, spa: 2, spd: -1, spe: 2},
-        shelter: {def: 1},
-        shiftgear: {atk: 1, spe: 2},
-        swordsdance: {atk: 2},
-        tailglow: {spa: 3},
-        takeheart: {spa: 1, spd: 1},
-        tidyup: {atk: 1, spe: 1},
-        torchsong: {spa: 1},
-        trailblaze: {spe: 1},
-        victorydance: {atk: 1, def: 1, spe: 1},
-        workup: {atk: 1, spa: 1},
+        acidarmor: {def: 2}, agility: {spe: 2}, amnesia: {spd: 2}, ancientpower: all(1),
+        aquastep: {spe: 1}, aromaticmist: {spd: 1}, aurawheel: {spe: 1}, autotomize: {spe: 2},
+        barrier: {def: 2}, bellydrum: {atk: 12}, bulkup: {atk: 1, def: 1}, calmmind: {spa: 1, spd: 1},
+        charge: {spd: 1}, chargebeam: {spa: 1}, clangoroussoul: all(1), clangoroussoulblaze: all(1),
+        coaching: {atk: 1, def: 1}, coil: {atk: 1, def: 1, accuracy: 1}, cosmicpower: {def: 1, spd: 1},
+        cottonguard: {def: 3}, curse: {atk: 1, def: 1, spe: -1}, defendorder: {def: 1, spd: 1},
+        defensecurl: {def: 1}, diamondstorm: {def: 2}, doubleteam: {evasion: 1},
+        dragondance: {atk: 1, spe: 1}, esperwing: {spe: 1}, extremeevoboost: all(2),
+        fierydance: {spa: 1}, filletaway: {atk: 2, spa: 2, spe: 2}, flamecharge: {spe: 1},
+        geargup: {atk: 1, spa: 1}, geomancy: {spa: 2, spd: 2, spe: 2}, growth: {atk: 1, spa: 1},
+        harden: {def: 1}, honeclaws: {atk: 1, accuracy: 1}, howl: {atk: 1}, irondefense: {def: 2},
+        magneticflux: {def: 1, spd: 1}, meditate: {atk: 1}, metalclaw: {atk: 1}, meteormash: {atk: 1},
+        minimize: {evasion: 2}, mysticalpower: {spa: 1}, nastyplot: {spa: 2}, noretreat: all(1),
+        ominouswind: all(1), poweruppunch: {atk: 1}, psyshieldbash: {def: 1},
+        quiverdance: {spa: 1, spd: 1, spe: 1}, rapidspin: {spe: 1}, rockpolish: {spe: 2},
+        scaleshot: {def: -1, spe: 1}, sharpen: {atk: 1}, shellsmash: {atk: 2, def: -1, spa: 2, spd: -1, spe: 2},
+        shelter: {def: 2}, shiftgear: {atk: 1, spe: 2}, silverwind: all(1), skullbash: {def: 1},
+        steelwing: {def: 1}, stuffcheeks: {def: 2}, swordsdance: {atk: 2}, tailglow: {spa: 3},
+        takeheart: {spa: 1, spd: 1}, tidyup: {atk: 1, spe: 1}, torchsong: {spa: 1}, trailblaze: {spe: 1},
+        victorydance: {atk: 1, def: 1, spe: 1}, withdraw: {def: 1}, workup: {atk: 1, spa: 1},
+        // self-lowering attacks
+        closecombat: {def: -1, spd: -1}, superpower: {atk: -1, def: -1}, overheat: {spa: -2},
+        dracometeor: {spa: -2}, leafstorm: {spa: -2}, fleurcannon: {spa: -2}, psychoboost: {spa: -2},
+        makeitrain: {spa: -1}, vcreate: {def: -1, spd: -1, spe: -1}, hammerarm: {spe: -1},
+        icehammer: {spe: -1}, dragonascent: {def: -1, spd: -1}, hyperspacefury: {def: -1},
+        headlongrush: {def: -1, spd: -1}, spinout: {spe: -2}, clangingscales: {def: -1},
+    };
+
+    // Stat changes on the target
+    const TARGET_BOOST_OVERRIDES = {
+        // raises the target
+        swagger: {atk: 2}, flatter: {spa: 1}, decorate: {atk: 2, spa: 2}, spicyextract: {atk: 2, def: -2},
+        // lowers the target
+        growl: {atk: -1}, leer: {def: -1}, tailwhip: {def: -1}, screech: {def: -2}, charm: {atk: -2},
+        featherdance: {atk: -2}, sweetscent: {evasion: -2}, scaryface: {spe: -2}, stringshot: {spe: -2},
+        cottonspore: {spe: -2}, babydolleyes: {atk: -1}, confide: {spa: -1}, captivate: {spa: -2},
+        eerieimpulse: {spa: -2}, metalsound: {spd: -2}, faketears: {spd: -2}, tickle: {atk: -1, def: -1},
+        nobleroar: {atk: -1, spa: -1}, partingshot: {atk: -1, spa: -1}, tearfullook: {atk: -1, spa: -1},
+        venomdrench: {atk: -1, spa: -1, spe: -1}, strengthsap: {atk: -1}, memento: {atk: -2, spa: -2},
+        playnice: {atk: -1}, kinesis: {accuracy: -1}, sandattack: {accuracy: -1}, smokescreen: {accuracy: -1},
+        flash: {accuracy: -1}, tarshot: {spe: -1}, toxicthread: {spe: -1}, defog: {evasion: -1},
     };
 
     // {self: [boostObjects], target: [boostObjects]}
@@ -2514,6 +2544,9 @@
         if (data.self?.boosts) {
             fx.self.push(data.self.boosts);
         }
+        if (data.selfBoost?.boosts) {
+            fx.self.push(data.selfBoost.boosts);
+        }
 
         // Secondary effects.
         const secondaries = [
@@ -2531,11 +2564,11 @@
             }
         }
 
-        // Only supplement real move data with our manual overrides.
-        const override = BOOST_OVERRIDES[move.id];
-        if (override) {
-            fx.self.push(override);
-        }
+        const selfOverride = BOOST_OVERRIDES[move.id];
+        if (selfOverride) fx.self.push(selfOverride);
+
+        const targetOverride = TARGET_BOOST_OVERRIDES[move.id];
+        if (targetOverride) fx.target.push(targetOverride);
 
         return fx;
     }
@@ -2568,7 +2601,7 @@
     ];
 
     const STAT_FILTER_FAMILIES = [
-        {id: 'boosts', label: 'Boosts', who: 'self', sign: 1, verb: "Raises the user's"},
+        {id: 'boosts', label: 'Boosts', who: 'any', sign: 1, verb: "Raises a Pokémon's"},
         {id: 'lowers', label: 'Lowers', who: 'self', sign: -1, verb: "Lowers the user's"},
         {id: 'lowerstarget', label: 'Lowers Target', who: 'target', sign: -1, verb: "Lowers the target's"},
         {id: 'zboosts', label: 'Z-Boosts', z: true, verb: "Z-Power raises the user's"},
@@ -2584,11 +2617,11 @@
                     desc: `${fam.verb} ${st.key === 'stats' ? 'stats' : st.label}`,
                     test: fam.z
                     ? (m, s) => zBoostHas(m, st.key, s.dex)
-                    : (m, s) => boostHas(
-                        moveBoostEffects(m, s.dex)[fam.who],
-                        fam.sign,
-                        st.key
-                    ),
+                    : (m, s) => {
+                        const fx = moveBoostEffects(m, s.dex);
+                        const list = fam.who === 'any' ? fx.self.concat(fx.target) : fx[fam.who];
+                        return boostHas(list, fam.sign, st.key);
+                    },
                 };
             }
         }
@@ -2598,11 +2631,11 @@
     // ---------- toggle definitions ----------
 
     const flagToggle = (flag, label, desc, aliases = []) =>
-        ({label, desc, aliases, test: (m) => moveFlag(m, flag)});
+    ({label, desc, aliases, test: (m) => moveFlag(m, flag)});
     const listToggle = (ids, label, desc, aliases = []) =>
-        ({label, desc, aliases, test: (m) => ids.has(m.id)});
+    ({label, desc, aliases, test: (m) => ids.has(m.id)});
     const statusToggle = (status, label, desc, aliases = []) =>
-        ({label, desc, aliases, test: (m) => inflictedStatuses(m).has(status)});
+    ({label, desc, aliases, test: (m) => inflictedStatuses(m).has(status)});
 
     const CORE_MOVE_TOGGLES = {
         sf: {
@@ -2686,6 +2719,18 @@
             test: () => true,
         },
         bypass: flagToggle('bypasssub', 'Bypasses Substitute', "Ignores the target's Substitute", ['bypass', 'infiltrator']),
+
+        bypassprotect: {
+            label: 'Bypasses Protect',
+            aliases: ['bypassprotection', 'bypassesprotection', 'breaksprotect', 'ignoreprotect', 'feint'],
+            desc: 'Hits through Protect',
+            test: bypassesProtect,
+        },
+        spread: {
+            label: 'Spread', aliases: ['spreadmoves', 'multitarget'],
+            desc: 'Hits multiple targets',
+            test: isSpreadMove,
+        },
     };
 
     const MOVE_TOGGLES = Object.assign({}, CORE_MOVE_TOGGLES, buildStatToggles(), UTILITY_MOVE_TOGGLES);
@@ -2698,13 +2743,13 @@
     // ---------- coverage ----------
 
     const allTypeNames = () =>
-        Object.keys(window.BattleTypeChart || {})
-            .filter((id) => id !== 'stellar')
-            .map((id) => ({id, name: id.charAt(0).toUpperCase() + id.slice(1)}));
+    Object.keys(window.BattleTypeChart || {})
+    .filter((id) => id !== 'stellar')
+    .map((id) => ({id, name: id.charAt(0).toUpperCase() + id.slice(1)}));
 
     const isCoverageQuery = (raw) => /^coverage(\s|$)/i.test(raw) || /^cov\s/i.test(raw);
     const coverageTypesFromValue = (value) =>
-        String(value).replace(/^Coverage\s+/i, '').split('/').filter(Boolean);
+    String(value).replace(/^Coverage\s+/i, '').split('/').filter(Boolean);
 
     // "coverage fire, steel" -> suggestion rows for the typing being built.
     function coverageSuggestions(raw) {
@@ -2739,7 +2784,7 @@
         if (move.id === 'thousandarrows' && def === 'Flying') return 1;
 
         const v = dex?.types?.get?.(def)?.damageTaken?.[atk] ??
-            window.BattleTypeChart?.[toID(def)]?.damageTaken?.[atk];
+              window.BattleTypeChart?.[toID(def)]?.damageTaken?.[atk];
         return v === 1 ? 2 : v === 2 ? 0.5 : v === 3 ? 0 : 1;
     }
 
@@ -2762,7 +2807,7 @@
     // ---------- suggestions & chips ----------
 
     const isMoveCustomFilter = (t) =>
-        typeof t === 'string' && (isNegatedFilterType(t) || t.startsWith(MOVE_FILTER_TYPE));
+    typeof t === 'string' && (isNegatedFilterType(t) || t.startsWith(MOVE_FILTER_TYPE));
 
     function moveToggleSuggestions(query, minLen = 3, negated = false) {
         const q = toSearchId(query);
@@ -2793,8 +2838,8 @@
         if (/^cov /i.test(body)) {
             const all = allTypeNames();
             const types = body.slice(4).split('/')
-                .map((t) => all.find((x) => x.id === toSearchId(t)))
-                .filter(Boolean);
+            .map((t) => all.find((x) => x.id === toSearchId(t)))
+            .filter(Boolean);
             if (!types.length) return null;
 
             const label = COVERAGE_PREFIX + types.map((t) => t.name).join('/');
@@ -2820,36 +2865,36 @@
 
     function patchMoveSearchFilters() {
         return patchMethod(window.BattleMoveSearch?.prototype, 'filter', '__qolMoveFiltersPatched', (original) =>
-            function (row, filters) {
-                const custom = (filters || []).filter((f) => isMoveCustomFilter(f[0]));
-                if (!custom.length) return original.call(this, row, filters);
+                           function (row, filters) {
+            const custom = (filters || []).filter((f) => isMoveCustomFilter(f[0]));
+            if (!custom.length) return original.call(this, row, filters);
 
-                const native = filters.filter((f) => !isMoveCustomFilter(f[0]));
-                if (!original.call(this, row, native)) return false;
-                if (row[0] !== 'move') return true;
+            const native = filters.filter((f) => !isMoveCustomFilter(f[0]));
+            if (!original.call(this, row, native)) return false;
+            if (row[0] !== 'move') return true;
 
-                const move = this.dex.moves.get(row[1]);
-                if (!move?.exists) return false;
+            const move = this.dex.moves.get(row[1]);
+            if (!move?.exists) return false;
 
-                return custom.every(([rawType, value]) => {
-                    const negated = isNegatedFilterType(rawType);
-                    const type = baseFilterType(rawType);
-                    if (type === NATDEX_MOVE_FILTER_TYPE) return true; // only swaps the pool, never rejects
+            return custom.every(([rawType, value]) => {
+                const negated = isNegatedFilterType(rawType);
+                const type = baseFilterType(rawType);
+                if (type === NATDEX_MOVE_FILTER_TYPE) return true; // only swaps the pool, never rejects
 
-                    let matches;
-                    if (type.startsWith(MOVE_FILTER_TYPE)) {
-                        const key = type.slice(MOVE_FILTER_TYPE.length);
-                        matches = key === 'cov'
-                            ? moveCovers(this.dex, move, coverageTypesFromValue(value))
-                            : !!MOVE_TOGGLES[key]?.test(move, this);
-                    } else {
-                        // negated native filter (type / category)
-                        matches = original.call(this, row, [[type, value]]);
-                    }
-                    return negated ? !matches : matches;
-                });
-            }
-        );
+                let matches;
+                if (type.startsWith(MOVE_FILTER_TYPE)) {
+                    const key = type.slice(MOVE_FILTER_TYPE.length);
+                    matches = key === 'cov'
+                        ? moveCovers(this.dex, move, coverageTypesFromValue(value))
+                    : !!MOVE_TOGGLES[key]?.test(move, this);
+                } else {
+                    // negated native filter (type / category)
+                    matches = original.call(this, row, [[type, value]]);
+                }
+                return negated ? !matches : matches;
+            });
+        }
+                          );
     }
 
     // ---------- move-search engine handlers (see section 15) ----------
@@ -2898,11 +2943,11 @@
         // "!<text>": our toggles + native type/category suggestions.
         // Bare "!" lists everything.
         const native = body
-            ? (original.call(engine, body) || []).filter((r) => r[0] === 'type' || r[0] === 'category')
-            : [
-                ...allTypeNames().map((t) => ['type', t.id, 0, 0]),
-                ...['physical', 'special', 'status'].map((c) => ['category', c, 0, 0]),
-            ];
+        ? (original.call(engine, body) || []).filter((r) => r[0] === 'type' || r[0] === 'category')
+        : [
+            ...allTypeNames().map((t) => ['type', t.id, 0, 0]),
+            ...['physical', 'special', 'status'].map((c) => ['category', c, 0, 0]),
+        ];
 
         engine.results = [['header', 'Not'], ...moveToggleSuggestions(body, 0, true), ...native];
         engine.exactMatch = true;
@@ -3059,8 +3104,8 @@
                 // to exclude one named Pokémon, and no egg groups).
                 const suggestions = (original.call(engine, q) || []).filter(
                     ([rowType, rowId]) =>
-                        (rowType === 'type' || rowType === 'ability' || rowType === 'move' || rowType === 'tier') &&
-                        !Object.prototype.hasOwnProperty.call(CUSTOM_TOGGLE_FILTERS, toSearchId(rowId))
+                    (rowType === 'type' || rowType === 'ability' || rowType === 'move' || rowType === 'tier') &&
+                    !Object.prototype.hasOwnProperty.call(CUSTOM_TOGGLE_FILTERS, toSearchId(rowId))
                 );
                 results = customToggleSuggestions(q).concat(suggestions);
             }
@@ -3167,8 +3212,8 @@
 
         if (mode && result?.[0] === 'type') {
             const typeName = engine.capitalizeFirst
-                ? engine.capitalizeFirst(result[1])
-                : String(result[1]).charAt(0).toUpperCase() + String(result[1]).slice(1);
+            ? engine.capitalizeFirst(result[1])
+            : String(result[1]).charAt(0).toUpperCase() + String(result[1]).slice(1);
 
             return `${engine.__qolNegateMode ? 'Not ' : ''}${EFFECT_LABELS[mode]} ${typeName}`;
         }
@@ -3189,34 +3234,34 @@
     // Picking a type from the "Weak / Resists / Neutral" list adds the chip directly.
     function patchEngineSelectResult() {
         return patchEngineMethod('selectResult', '__qolSelectResultPatched', (original) =>
-            function (index) {
-                const mode = this.__qolEffectivenessMode;
+                                 function (index) {
+            const mode = this.__qolEffectivenessMode;
 
-                if (mode && this.results) {
-                    const result = this.results[index === undefined ? this.selection : index];
+            if (mode && this.results) {
+                const result = this.results[index === undefined ? this.selection : index];
 
-                    if (result?.[0] === 'type' && this.addFilter([mode, this.capitalizeFirst(result[1])])) {
-                        this.__qolEffectivenessMode = null;
-                        this.selection = 0;
-                        return null;
-                    }
+                if (result?.[0] === 'type' && this.addFilter([mode, this.capitalizeFirst(result[1])])) {
+                    this.__qolEffectivenessMode = null;
+                    this.selection = 0;
+                    return null;
                 }
-
-                return original.call(this, index);
             }
-        );
+
+            return original.call(this, index);
+        }
+                                );
     }
 
     // Switching search type clears any pending filter prefix mode.
     function patchEngineSetType() {
         return patchEngineMethod('setType', '__qolSetTypePatched', (original) =>
-            function (...args) {
-                resetPokemonModes(this);
-                this.query = '';
-                this.exactMatch = false;
-                return original.apply(this, args);
-            }
-        );
+                                 function (...args) {
+            resetPokemonModes(this);
+            this.query = '';
+            this.exactMatch = false;
+            return original.apply(this, args);
+        }
+                                );
     }
 
     // Patches that need the live search engine. The engine's existence gates
@@ -3228,92 +3273,147 @@
         patchEngineSetType();
 
         return Object.keys(ENGINE_SEARCH_HANDLERS.pokemon).map((key) =>
-            patchEngineMethod(key, '__qolDispatch_' + key, (original) =>
-                function (...args) {
-                    const handler = ENGINE_SEARCH_HANDLERS[this.typedSearch?.searchType]?.[key];
-                    return handler ? handler(this, original, ...args) : original.apply(this, args);
-                }
-            )
-        ).every(Boolean);
+                                                               patchEngineMethod(key, '__qolDispatch_' + key, (original) =>
+                                                                                 function (...args) {
+            const handler = ENGINE_SEARCH_HANDLERS[this.typedSearch?.searchType]?.[key];
+            return handler ? handler(this, original, ...args) : original.apply(this, args);
+        }
+                                                                                )
+                                                              ).every(Boolean);
     }
 
     // ====================================================================
     // 16. SEARCH UI: SORT, ROW RENDERING, FILTER CHIPS
     // ====================================================================
 
+    // Adds a "Prio" header button right after PP. Idempotent.
+    function withPrioSortButton(html, sortCol) {
+        if (typeof html !== 'string' || html.includes('data-sort="priority"')) return html;
+        const cur = sortCol === 'priority' ? ' cur' : '';
+        return html.replace(
+            /(<button[^>]*data-sort=["']pp["'][^>]*>[\s\S]*?<\/button>)/,
+            `$1<button class="sortcol ppsortcol${cur}" data-sort="priority" style="width:38px">Prio</button>`
+        );
+    }
+    // Native sort() throws on unknown columns, so handle 'priority' ourselves.
+    // First click = highest priority first, second = lowest first, third = off.
+    function patchMoveSearchSort() {
+        return patchMethod(window.BattleMoveSearch?.prototype, 'sort', '__qolMoveSortPatched', (original) =>
+                           function (results, sortCol, reverseSort) {
+            if (sortCol !== 'priority') return original.call(this, results, sortCol, reverseSort);
+
+            const order = reverseSort ? -1 : 1;
+            const prio = (row) => (row[0] === 'move' ? this.dex.moves.get(row[1])?.priority || 0 : 0);
+            // 1st click: highest priority first. 2nd click (reverseSort): lowest first. 3rd: native toggle clears the sort.
+            return results.sort((a, b) =>
+                                (prio(b) - prio(a)) * order || String(a[1]).localeCompare(String(b[1])));
+        }
+                          );
+    }
+
+    // Best-effort: not every client version has renderMoveSortRow, so it never blocks patchLoop.
+    function patchMoveSortRowUi() {
+        patchMethod(window.BattleSearch?.prototype, 'renderMoveSortRow', '__qolPrioHeaderPatched', (original) =>
+                    function (...args) {
+            return withPrioSortButton(original.apply(this, args), this.engine?.sortCol);
+        }
+                   );
+        return true;
+    }
+
+    function decorateMovePrioHeader() {
+        if (getTeambuilderRoom()?.search?.engine?.typedSearch?.searchType !== 'move') return;
+        const engine = getTeambuilderRoom().search.engine;
+
+        for (const pp of document.querySelectorAll('.sortrow button[data-sort="pp"]')) {
+            const existing = pp.parentElement.querySelector('button[data-sort="priority"]');
+            if (existing) {
+                existing.classList.toggle('cur', engine.sortCol === 'priority');
+                continue;
+            }
+            if (pp.parentElement.querySelector('button[data-sort="priority"]')) continue;
+            const btn = document.createElement('button');
+            const cur = engine.sortCol === 'priority' ? ' cur' : '';
+            btn.className = 'sortcol ppsortcol' + cur;
+            btn.dataset.sort = 'priority';
+            btn.style.width = '38px';
+            btn.textContent = 'Prio';
+            pp.after(btn);
+        }
+    }
     function patchSearchSort() {
         return patchMethod(window.BattlePokemonSearch?.prototype, 'sort', '__qolPatched', (original) =>
-            function (results, sortCol, reverseSort) {
-                const isStatSort = STATS.includes(sortCol) || sortCol === 'bst';
-                if (!isStatSort) return original.call(this, results, sortCol, reverseSort);
+                           function (results, sortCol, reverseSort) {
+            const isStatSort = STATS.includes(sortCol) || sortCol === 'bst';
+            if (!isStatSort) return original.call(this, results, sortCol, reverseSort);
 
-                const dex = this.dex;
-                const order = reverseSort ? -1 : 1;
-                const sortBy = (statsFor) =>
-                    results.sort((a, b) => {
-                        const sa = statsFor(a[1]);
-                        const sb = statsFor(b[1]);
-                        return (sortCol === 'bst' ? sumStats(sb) - sumStats(sa) : sb[sortCol] - sa[sortCol]) * order;
-                    });
+            const dex = this.dex;
+            const order = reverseSort ? -1 : 1;
+            const sortBy = (statsFor) =>
+            results.sort((a, b) => {
+                const sa = statsFor(a[1]);
+                const sb = statsFor(b[1]);
+                return (sortCol === 'bst' ? sumStats(sb) - sumStats(sa) : sb[sortCol] - sa[sortCol]) * order;
+            });
 
-                // "into X": sort by the cross-evolved stats.
-                if (this.__qolIntoId) {
-                    return sortBy((id) => {
-                        const sp = dex.species.get(id);
-                        return crossEvolveView(dex, sp, this.__qolIntoId)?.baseStats || sp.baseStats;
-                    });
-                }
-
-                // "X into": X is the base, each result is the nickname.
-                if (this.__qolFromId) {
-                    const base = dex.species.get(this.__qolFromId);
-                    return sortBy((id) =>
-                        crossEvolveView(dex, base, id)?.baseStats || dex.species.get(id).baseStats);
-                }
-
-                const mod = getActiveMod();
-                if (!hasSearchListStats(mod)) return original.call(this, results, sortCol, reverseSort);
-
-                return sortBy((id) => searchListStats(dex.species.get(id), mod));
+            // "into X": sort by the cross-evolved stats.
+            if (this.__qolIntoId) {
+                return sortBy((id) => {
+                    const sp = dex.species.get(id);
+                    return crossEvolveView(dex, sp, this.__qolIntoId)?.baseStats || sp.baseStats;
+                });
             }
-        );
+
+            // "X into": X is the base, each result is the nickname.
+            if (this.__qolFromId) {
+                const base = dex.species.get(this.__qolFromId);
+                return sortBy((id) =>
+                              crossEvolveView(dex, base, id)?.baseStats || dex.species.get(id).baseStats);
+            }
+
+            const mod = getActiveMod();
+            if (!hasSearchListStats(mod)) return original.call(this, results, sortCol, reverseSort);
+
+            return sortBy((id) => searchListStats(dex.species.get(id), mod));
+        }
+                          );
     }
 
     function patchSearchRenderer() {
         return patchMethod(window.BattleSearch?.prototype, 'renderPokemonRow', '__qolPatched', (original) =>
-            function (pokemon, matchStart, matchLength, errorMessage, attrs) {
-                const call = (mon, err) => original.call(this, mon, matchStart, matchLength, err, attrs);
+                           function (pokemon, matchStart, matchLength, errorMessage, attrs) {
+            const call = (mon, err) => original.call(this, mon, matchStart, matchLength, err, attrs);
 
-                // Cross-evolved preview for "into X" / "X into" filters.
-                if (pokemon) {
-                    const dex = this.engine.dex;
-                    const intoId = getIntoFilterId(this.engine);
-                    const fromId = getIntoFilterId(this.engine, 'from');
+            // Cross-evolved preview for "into X" / "X into" filters.
+            if (pokemon) {
+                const dex = this.engine.dex;
+                const intoId = getIntoFilterId(this.engine);
+                const fromId = getIntoFilterId(this.engine, 'from');
 
-                    let view = intoId ? crossEvolveView(dex, pokemon, intoId) : null;
-                    if (!view && fromId) view = crossEvolveView(dex, dex.species.get(fromId), pokemon.id);
+                let view = intoId ? crossEvolveView(dex, pokemon, intoId) : null;
+                if (!view && fromId) view = crossEvolveView(dex, dex.species.get(fromId), pokemon.id);
 
-                    if (view) {
-                        return call(Object.assign({}, pokemon, {
-                            baseStats: view.baseStats,
-                            types: view.types,
-                            abilities: view.abilities || pokemon.abilities,
-                        }), errorMessage);
-                    }
+                if (view) {
+                    return call(Object.assign({}, pokemon, {
+                        baseStats: view.baseStats,
+                        types: view.types,
+                        abilities: view.abilities || pokemon.abilities,
+                    }), errorMessage);
                 }
-
-                // Natdex: suppress the legality label.
-                const filters = this.engine?.typedSearch?.filters ?? [];
-                if (filters.some((f) => Array.isArray(f) && f[0] === 'natdex')) {
-                    return call(pokemon, undefined);
-                }
-
-                const mod = getActiveMod();
-                if (!pokemon || !hasSearchListStats(mod)) return call(pokemon, errorMessage);
-
-                return call(Object.assign({}, pokemon, {baseStats: searchListStats(pokemon, mod)}), errorMessage);
             }
-        );
+
+            // Natdex: suppress the legality label.
+            const filters = this.engine?.typedSearch?.filters ?? [];
+            if (filters.some((f) => Array.isArray(f) && f[0] === 'natdex')) {
+                return call(pokemon, undefined);
+            }
+
+            const mod = getActiveMod();
+            if (!pokemon || !hasSearchListStats(mod)) return call(pokemon, errorMessage);
+
+            return call(Object.assign({}, pokemon, {baseStats: searchListStats(pokemon, mod)}), errorMessage);
+        }
+                          );
     }
 
     // Row HTML for suggestion rows: custom rows (toggles / into / from) render
@@ -3322,55 +3422,59 @@
     // rows get "Weak " / "!" prefixes while an effectiveness / negate mode is active.
     function patchSearchRowText() {
         return patchMethod(window.BattleSearch?.prototype, 'renderRow', '__qolEffectivenessTypeNamePatched', (original) =>
-            function (row, type, matchStart, matchEnd, errorMessage, attrs) {
-                const renderLabelRow = (text) =>
-                    original.call(this, ['ability', 'noability'], 'ability', matchStart, matchEnd, errorMessage, attrs)
-                        .replace(/(<span class="col namecol"><b>)([^<]*)(<\/b>)/, `$1${text}$3`);
+                           function (row, type, matchStart, matchEnd, errorMessage, attrs) {
+            const renderLabelRow = (text) =>
+            original.call(this, ['ability', 'noability'], 'ability', matchStart, matchEnd, errorMessage, attrs)
+            .replace(/(<span class="col namecol"><b>)([^<]*)(<\/b>)/, `$1${text}$3`);
 
-                const id = type === 'ability' && typeof row?.[1] === 'string' ? row[1] : '';
-                const dex = this.engine?.dex;
+            const id = type === 'ability' && typeof row?.[1] === 'string' ? row[1] : '';
+            const dex = this.engine?.dex;
 
-                if (id.startsWith(INTO_PREFIX)) {
-                    const sp = dex?.species?.get(id.slice(INTO_PREFIX.length));
-                    if (sp?.exists) return renderLabelRow(`Into ${sp.name}`);
-                }
-
-                if (id.startsWith(FROM_PREFIX)) {
-                    const sp = dex?.species?.get(id.slice(FROM_PREFIX.length));
-                    if (sp?.exists) return renderLabelRow(`${sp.name} into`);
-                }
-
-                if (id.startsWith(CUSTOM_TOGGLE_PREFIX)) {
-                    const label = CUSTOM_TOGGLE_FILTERS[id.slice(CUSTOM_TOGGLE_PREFIX.length)];
-                    if (label) return renderLabelRow(this.engine?.__qolNegateMode ? `Not ${label}` : label);
-                }
-
-                const html = original.call(this, row, type, matchStart, matchEnd, errorMessage, attrs);
-
-                if (this.engine?.typedSearch?.searchType !== 'pokemon') return html;
-
-                const mode = this.engine?.__qolEffectivenessMode;
-                const negated = !!this.engine?.__qolNegateMode;
-
-                if (mode && type === 'type') {
-                    const prefix = negated ? `!${EFFECT_LABELS[mode]}` : EFFECT_LABELS[mode];
-                    return html.replace(/(<span class="col namecol"><b>)([^<]+)(<\/b>)/, `$1${prefix} $2$3`);
-                }
-
-                if (!mode && negated && ['type', 'ability', 'move', 'tier'].includes(type)) {
-                    const nameColumn = type === 'move' ? 'movenamecol' : 'namecol';
-                    const pattern = new RegExp(`(<span class="col ${nameColumn}">)`);
-
-                    return html.replace(pattern, (m, openingTag, offset, fullHtml) => {
-                        // Avoid adding a second "!" if this row was already prefixed.
-                        const after = fullHtml.slice(offset + openingTag.length);
-                        return after.startsWith('!') || after.startsWith('<b>!</b>') ? openingTag : `${openingTag}!`;
-                    });
-                }
-
-                return html;
+            if (id.startsWith(INTO_PREFIX)) {
+                const sp = dex?.species?.get(id.slice(INTO_PREFIX.length));
+                if (sp?.exists) return renderLabelRow(`Into ${sp.name}`);
             }
-        );
+
+            if (id.startsWith(FROM_PREFIX)) {
+                const sp = dex?.species?.get(id.slice(FROM_PREFIX.length));
+                if (sp?.exists) return renderLabelRow(`${sp.name} into`);
+            }
+
+            if (id.startsWith(CUSTOM_TOGGLE_PREFIX)) {
+                const label = CUSTOM_TOGGLE_FILTERS[id.slice(CUSTOM_TOGGLE_PREFIX.length)];
+                if (label) return renderLabelRow(this.engine?.__qolNegateMode ? `Not ${label}` : label);
+            }
+
+            const html = original.call(this, row, type, matchStart, matchEnd, errorMessage, attrs);
+
+            if (type === 'sortmove') {
+                return withPrioSortButton(html, this.engine?.sortCol);
+            }
+
+            if (this.engine?.typedSearch?.searchType !== 'pokemon') return html;
+
+            const mode = this.engine?.__qolEffectivenessMode;
+            const negated = !!this.engine?.__qolNegateMode;
+
+            if (mode && type === 'type') {
+                const prefix = negated ? `!${EFFECT_LABELS[mode]}` : EFFECT_LABELS[mode];
+                return html.replace(/(<span class="col namecol"><b>)([^<]+)(<\/b>)/, `$1${prefix} $2$3`);
+            }
+
+            if (!mode && negated && ['type', 'ability', 'move', 'tier'].includes(type)) {
+                const nameColumn = type === 'move' ? 'movenamecol' : 'namecol';
+                const pattern = new RegExp(`(<span class="col ${nameColumn}">)`);
+
+                return html.replace(pattern, (m, openingTag, offset, fullHtml) => {
+                    // Avoid adding a second "!" if this row was already prefixed.
+                    const after = fullHtml.slice(offset + openingTag.length);
+                    return after.startsWith('!') || after.startsWith('<b>!</b>') ? openingTag : `${openingTag}!`;
+                });
+            }
+
+            return html;
+        }
+                          );
     }
 
     // Text on the filter chips above the results.
@@ -3378,33 +3482,33 @@
         const proto = findPrototypeWithMethod(getTeambuilderRoom()?.search, 'getFilterText');
 
         return patchMethod(proto, 'getFilterText', '__qolEffectivenessFilterTextPatched', () =>
-            function (q) {
-                const buttons = this.filters.map((filter) => {
-                    const kind = baseFilterType(filter[0]);
-                    let text = filter[1];
+                           function (q) {
+            const buttons = this.filters.map((filter) => {
+                const kind = baseFilterType(filter[0]);
+                let text = filter[1];
 
-                    if (EFFECT_LABELS[kind]) {
-                        text = EFFECT_LABELS[kind] + ' ' + text.charAt(0).toUpperCase() + text.slice(1);
-                    } else if (kind === 'from') {
-                        text = Dex.species.get(text).name + ' Into';
-                    } else if (kind === 'into') {
-                        text = 'Into ' + Dex.species.get(text).name;
-                    } else if (kind === 'move') {
-                        text = Dex.moves.get(text).name;
-                    } else if (kind === 'pokemon') {
-                        text = Dex.species.get(text).name;
-                    }
+                if (EFFECT_LABELS[kind]) {
+                    text = EFFECT_LABELS[kind] + ' ' + text.charAt(0).toUpperCase() + text.slice(1);
+                } else if (kind === 'from') {
+                    text = Dex.species.get(text).name + ' Into';
+                } else if (kind === 'into') {
+                    text = 'Into ' + Dex.species.get(text).name;
+                } else if (kind === 'move') {
+                    text = Dex.moves.get(text).name;
+                } else if (kind === 'pokemon') {
+                    text = Dex.species.get(text).name;
+                }
 
-                    if (isNegatedFilterType(filter[0])) text = '!' + text;
+                if (isNegatedFilterType(filter[0])) text = '!' + text;
 
-                    return '<button class="filter" value="' + BattleLog.escapeHTML(filter.join(':')) + '">' +
-                        text + ' <i class="fa fa-times-circle"></i></button> ';
-                });
+                return '<button class="filter" value="' + BattleLog.escapeHTML(filter.join(':')) + '">' +
+                    text + ' <i class="fa fa-times-circle"></i></button> ';
+            });
 
-                return '<p>Filters: ' + buttons.join('') +
-                    (q ? '' : '<small style="color: #888">(backspace = delete filter)</small>') + '</p>';
-            }
-        );
+            return '<p>Filters: ' + buttons.join('') +
+                (q ? '' : '<small style="color: #888">(backspace = delete filter)</small>') + '</p>';
+        }
+                          );
     }
 
     // ====================================================================
@@ -3414,22 +3518,22 @@
     // Stat calculation for every mod.
     function patchGetStat() {
         return patchMethod(window.TeambuilderRoom?.prototype, 'getStat', '__qolPatched', (original) =>
-            function (stat, set, evOverride, natureOverride) {
-                const callOriginal = () => original.call(this, stat, set, evOverride, natureOverride);
+                           function (stat, set, evOverride, natureOverride) {
+            const callOriginal = () => original.call(this, stat, set, evOverride, natureOverride);
 
-                set = set || this.curSet;
-                if (!set) return 0;
+            set = set || this.curSet;
+            if (!set) return 0;
 
-                const mod = getActiveMod(this);
-                if (!mod) return callOriginal();
+            const mod = getActiveMod(this);
+            if (!mod) return callOriginal();
 
-                const dex = this.curTeam?.dex;
-                const baseStats = computeModBaseStats(mod, {dex, set, room: this});
-                if (!baseStats) return callOriginal();
+            const dex = this.curTeam?.dex;
+            const baseStats = computeModBaseStats(mod, {dex, set, room: this});
+            if (!baseStats) return callOriginal();
 
-                return withSpeciesBaseStats(dex, set.species, baseStats, callOriginal);
-            }
-        );
+            return withSpeciesBaseStats(dex, set.species, baseStats, callOriginal);
+        }
+                          );
     }
 
     // The visible "base stats" column.
@@ -3451,35 +3555,35 @@
         const proto = window.TeambuilderRoom?.prototype;
 
         const updateForm = patchMethod(proto, 'updateStatForm', '__qolPatched', (original) =>
-            function (setGuessed) {
-                const result = original.call(this, setGuessed);
+                                       function (setGuessed) {
+            const result = original.call(this, setGuessed);
 
-                applyModBaseStatColumn(this);
-                if (getActiveMod(this) === MOD.MIX_AND_MEGA && this.curSet?.species) {
-                    renderMixAndMegaSpeedNote(this);
-                }
-                return result;
+            applyModBaseStatColumn(this);
+            if (getActiveMod(this) === MOD.MIX_AND_MEGA && this.curSet?.species) {
+                renderMixAndMegaSpeedNote(this);
             }
-        );
+            return result;
+        }
+                                      );
 
         // Same post-hook for these: re-apply the base stat column.
         const columnPatches = ['updateStatGraph', 'natureChange'].map((key) =>
-            patchMethod(proto, key, '__qolBaseColumn_' + key, (original) =>
-                function (...args) {
-                    const result = original.apply(this, args);
-                    applyModBaseStatColumn(this);
-                    return result;
-                }
-            )
-        );
+                                                                      patchMethod(proto, key, '__qolBaseColumn_' + key, (original) =>
+                                                                                  function (...args) {
+            const result = original.apply(this, args);
+            applyModBaseStatColumn(this);
+            return result;
+        }
+                                                                                 )
+                                                                     );
 
         const statSlide = patchMethod(proto, 'statSlide', '__qolPatched', (original) =>
-            function (...args) {
-                const result = original.apply(this, args);
-                if (getActiveMod(this) === MOD.MIX_AND_MEGA) updateMixAndMegaSpeedNote(this);
-                return result;
-            }
-        );
+                                      function (...args) {
+            const result = original.apply(this, args);
+            if (getActiveMod(this) === MOD.MIX_AND_MEGA) updateMixAndMegaSpeedNote(this);
+            return result;
+        }
+                                     );
 
         return updateForm && statSlide && columnPatches.every(Boolean);
     }
@@ -3489,19 +3593,19 @@
     // returns. Also covers switching mons and page load.
     function patchRenderSetTypeIcons() {
         return patchMethod(window.TeambuilderRoom?.prototype, 'renderSet', '__qolMixAndMegaPatched', (original) =>
-            function (set, i) {
-                const html = original.call(this, set, i);
-                if (!set?.species) return html;
+                           function (set, i) {
+            const html = original.call(this, set, i);
+            if (!set?.species) return html;
 
-                const types = modifiedTypes(getActiveMod(this), this.curTeam?.dex, set);
-                if (!types) return html;
+            const types = modifiedTypes(getActiveMod(this), this.curTeam?.dex, set);
+            if (!types) return html;
 
-                return html.replace(
-                    /(<div class="setcell setcell-typeicons">)[\s\S]*?(<\/div>)/,
-                    `$1${typeIconsHtml(types)}$2`
-                );
-            }
-        );
+            return html.replace(
+                /(<div class="setcell setcell-typeicons">)[\s\S]*?(<\/div>)/,
+                `$1${typeIconsHtml(types)}$2`
+            );
+        }
+                          );
     }
 
     // Everything that reacts to a chooser pick:
@@ -3509,34 +3613,34 @@
     //   - Camomons / Mix and Mega: live-refresh the type icons
     function patchChartSet() {
         return patchMethod(window.TeambuilderRoom?.prototype, 'chartSet', '__qolChartSetPatched', (original) =>
-            function (val, selectNext) {
-                const mod = getActiveMod(this);
-                const chartName = this.curChartName;
+                           function (val, selectNext) {
+            const mod = getActiveMod(this);
+            const chartName = this.curChartName;
 
-                let nickname = null;
-                if (chartName === 'pokemon' && isFusionMod(mod)) {
-                    ({val, nickname} = resolveIntoSelection(this, val));
-                }
-
-                const result = original.call(this, val, selectNext);
-
-                if (nickname && this.curSet) {
-                    this.curSet.name = nickname;
-                    this.$('input[name=nickname]').val(nickname);
-                    this.save?.();
-
-                    fusionLastNickname = null;
-                    scheduleFusionRefresh(this, nickname);
-                }
-
-                // Camomons: refresh on any pick (species pick blanks the icons,
-                // move picks fill them). Mix and Mega: only on item.
-                if (mod === MOD.CAMOMONS || (mod === MOD.MIX_AND_MEGA && chartName === 'item')) {
-                    refreshTypeIcons(this);
-                }
-                return result;
+            let nickname = null;
+            if (chartName === 'pokemon' && isFusionMod(mod)) {
+                ({val, nickname} = resolveIntoSelection(this, val));
             }
-        );
+
+            const result = original.call(this, val, selectNext);
+
+            if (nickname && this.curSet) {
+                this.curSet.name = nickname;
+                this.$('input[name=nickname]').val(nickname);
+                this.save?.();
+
+                fusionLastNickname = null;
+                scheduleFusionRefresh(this, nickname);
+            }
+
+            // Camomons: refresh on any pick (species pick blanks the icons,
+            // move picks fill them). Mix and Mega: only on item.
+            if (mod === MOD.CAMOMONS || (mod === MOD.MIX_AND_MEGA && chartName === 'item')) {
+                refreshTypeIcons(this);
+            }
+            return result;
+        }
+                          );
     }
 
     // ====================================================================
@@ -3652,32 +3756,32 @@
 
     function patchBattleStatGuesserGetStat() {
         return patchMethod(window.BattleStatGuesser?.prototype, 'getStat', '__qolBattlePatched', (original) =>
-            function (stat, set, evOverride, natureOverride) {
-                const callOriginal = () => original.call(this, stat, set, evOverride, natureOverride);
-                if (!set?.species || !this.dex?.species?.get) return callOriginal();
+                           function (stat, set, evOverride, natureOverride) {
+            const callOriginal = () => original.call(this, stat, set, evOverride, natureOverride);
+            if (!set?.species || !this.dex?.species?.get) return callOriginal();
 
-                const mod = modFromFormat(this.formatid);
-                if (!BATTLE_GUESSER_MODS.has(mod)) return callOriginal();
+            const mod = modFromFormat(this.formatid);
+            if (!BATTLE_GUESSER_MODS.has(mod)) return callOriginal();
 
-                const baseStats = computeModBaseStats(mod, {dex: this.dex, set});
-                return baseStats ? withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal) : callOriginal();
-            }
-        );
+            const baseStats = computeModBaseStats(mod, {dex: this.dex, set});
+            return baseStats ? withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal) : callOriginal();
+        }
+                          );
     }
 
     // In-battle EV/nature optimizer (Godly Gift only).
     function patchBattleStatGuesserGuess() {
         return patchMethod(window.BattleStatGuesser?.prototype, 'guess', '__qolGodlyGiftPatched', (original) =>
-            function (set) {
-                const callOriginal = () => original.call(this, set);
+                           function (set) {
+            const callOriginal = () => original.call(this, set);
 
-                const room = getTeambuilderRoom();
-                if (!isGodlyGiftFormat(room) || !set?.species || !this.dex?.species?.get) return callOriginal();
+            const room = getTeambuilderRoom();
+            if (!isGodlyGiftFormat(room) || !set?.species || !this.dex?.species?.get) return callOriginal();
 
-                const baseStats = godlyGiftBaseStats(room, set);
-                return baseStats ? withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal) : callOriginal();
-            }
-        );
+            const baseStats = godlyGiftBaseStats(room, set);
+            return baseStats ? withSpeciesBaseStats(this.dex, set.species, baseStats, callOriginal) : callOriginal();
+        }
+                          );
     }
 
     // ---------- in-battle hover speed range ----------
@@ -3813,8 +3917,8 @@
                 a.innerHTML =
                     `<span class="col namecol qol-mvf">${bang}${info.label}</span> ` +
                     (info.iconsHtml
-                        ? `<span class="col typecol" style="width:auto;white-space:nowrap">${info.iconsHtml}</span>`
-                        : `<span class="col abilitydesccol">${info.descHtml}</span>`);
+                     ? `<span class="col typecol" style="width:auto;white-space:nowrap">${info.iconsHtml}</span>`
+                     : `<span class="col abilitydesccol">${info.descHtml}</span>`);
             } else if (bang && (entry.startsWith('type|') || entry.startsWith('category|'))) {
                 const name = a.querySelector('.namecol');
                 if (name && !name.dataset.qolNeg) {
@@ -3889,6 +3993,7 @@
         ['donor icons', decorateDonorIcons],
         ['move filter rows', decorateMoveFilterRows],
         ['pokemon filter rows', decoratePokemonFilterRows],
+        ['move prio header', decorateMovePrioHeader],
     ];
 
     let domDecoratorsInstalled = false;
@@ -3929,6 +4034,7 @@
             patchMoveSearchFilters(),
             patchSearchCacheInvalidation(),
 
+
             // search: ability + move pools per format
             patchAbilitySearchResults(),
             patchMoveSearchResults(),
@@ -3945,6 +4051,8 @@
             patchStatForm(),
             patchRenderSetTypeIcons(),
             patchChartSet(),
+            patchMoveSearchSort(),
+            patchMoveSortRowUi(),
 
             // battle
             patchBattleStatGuesserGetStat(),
@@ -3983,7 +4091,7 @@
     // ---------- debug / console API ----------
 
     const modStatsFor = (mod) => (set, room) =>
-        computeModBaseStats(mod, {dex: (room || window.room)?.curTeam?.dex, set, room: room || window.room});
+    computeModBaseStats(mod, {dex: (room || window.room)?.curTeam?.dex, set, room: room || window.room});
 
     window.TierShiftTeambuilder = {
         getTierShiftBoost,
