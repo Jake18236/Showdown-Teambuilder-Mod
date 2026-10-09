@@ -2393,7 +2393,7 @@
 
     // Client Move objects don't carry every field, so fall back to raw dex data.
     // Client Move objects drop fields like `boosts` and `self`, so prefer the raw
-// BattleMovedex entry and only use the Move object if there isn't one.
+    // BattleMovedex entry and only use the Move object if there isn't one.
     const rawMove = (move, dex) => {
         const id = move?.id;
         return (id && window.BattleMovedex?.[id]) ||
@@ -4039,6 +4039,7 @@
         ['natureswap', 'Nature Swap', 'Swaps the base stats boosted and lowered by the selected nature.'],
         ['franticfusions', 'Frantic Fusions', 'Adds one quarter of the donor’s non-HP stats.'],
         ['godlygift', 'Godly Gift', 'Receives the selected God’s stat for this team position.'],
+        ['sharedpower', 'Shared Power', 'Each Pokémon also has the abilities listed under Team abilities.'],
     ];
 
     function calcOmSelected() {
@@ -4046,239 +4047,572 @@
     }
 
     // ====================================================================
-// Prepare both Pokémon and ability-specific field/move behavior before damage.
-function calcOmPrepareCalculation(attacker, defender, move, field) {
-    const active = calcOmSelected() === 'pokebilities';
+    // Prepare both Pokémon and ability-specific field/move behavior before damage.
+    // ====================================================================
+    // Pokébilities / Shared Power core
+    // ====================================================================
 
-    for (const pokemon of [attacker, defender]) {
-        if (!pokemon?.species) continue;
+    const CALC_OM_ABILITY_MODES = new Set(['pokebilities', 'sharedpower']);
+    const calcOmAbilityMode = () => CALC_OM_ABILITY_MODES.has(calcOmSelected());
 
-        if (active) {
-            const abilities = new Set(calcOmSpeciesAbilities(pokemon));
-            const selected = pokemon.__qolOmTracked ? pokemon.__qolOmReal : pokemon.ability;
-            if (selected) abilities.add(selected);
-            calcOmTrackAbilities(pokemon, [...abilities]);
-        } else if (pokemon.__qolOmTracked) {
-            pokemon.__qolOmAbilities = []; // mode switched off: only the real ability counts
+    const calcOmSupport = {ok: false, reason: 'not installed yet', calls: 0, cloneLost: false, neverCalled: false, onChange: null};
+
+    // Applied through the raw stat. hasAbility() hides these from the calc so they
+    // can never double count. Different abilities stack (Pokébilities runs each
+    // ability's handler), so Huge Power + Pure Power = x4.
+    const CALC_OM_STAT_ABILITIES = {
+        'Huge Power': {atk: 2},
+        'Pure Power': {atk: 2},
+    };
+    const CALC_OM_WEATHER_ABILITIES = {
+        'Drought': 'Sun', 'Orichalcum Pulse': 'Sun', 'Drizzle': 'Rain', 'Sand Stream': 'Sand',
+        'Snow Warning': () => (calcOmGenNumber() >= 9 ? 'Snow' : 'Hail'),
+        'Desolate Land': 'Harsh Sunshine', 'Primordial Sea': 'Heavy Rain', 'Delta Stream': 'Strong Winds',
+    };
+    const CALC_OM_TERRAIN_ABILITIES = {
+        'Electric Surge': 'Electric', 'Hadron Engine': 'Electric', 'Grassy Surge': 'Grassy',
+        'Seed Sower': 'Grassy', 'Psychic Surge': 'Psychic', 'Misty Surge': 'Misty',
+    };
+    // Field flags; guarded with `in`, so a calc build without them is a no-op.
+    const CALC_OM_RUIN_FLAGS = {
+        'Beads of Ruin': 'isBeadsOfRuin', 'Sword of Ruin': 'isSwordOfRuin',
+        'Tablets of Ruin': 'isTabletsOfRuin', 'Vessel of Ruin': 'isVesselOfRuin',
+    };
+
+    const CALC_OM_PREPARED_ABILITIES = new Set([
+        'Skill Link', 'Steely Spirit',
+        ...Object.keys(CALC_OM_STAT_ABILITIES), ...Object.keys(CALC_OM_WEATHER_ABILITIES),
+        ...Object.keys(CALC_OM_TERRAIN_ABILITIES),
+    ]);
+
+    // ---------- ability pool per mode ----------
+
+    function calcOmAbilityPool(pokemon, mode) {
+        const pool = new Set();
+        const selected = pokemon.__qolOmTracked ? pokemon.__qolOmReal : pokemon.ability;
+        if (selected) pool.add(selected);
+
+        if (mode === 'pokebilities') {
+            calcOmSpeciesAbilityList(pokemon.species).forEach((a) => pool.add(a));
+        } else if (mode === 'sharedpower') {
+            (pokemon.__qolOmShared || []).forEach((a) => pool.add(a));
+        }
+        return [...pool];
+    }
+
+    // What the calc is allowed to see right now (honours Mold Breaker clearing and
+    // the leave-one-out exclusion).
+    function calcOmActiveAbilities(pokemon) {
+        if (!pokemon?.__qolOmTracked || pokemon.__qolOmCleared) return [];
+        const excluded = pokemon.__qolOmExcluded;
+        return (pokemon.__qolOmAbilities || []).filter((a) => a !== excluded);
+    }
+
+    function calcOmStatMultipliers(pokemon) {
+        const mult = {};
+        for (const ability of calcOmActiveAbilities(pokemon)) {
+            for (const [stat, m] of Object.entries(CALC_OM_STAT_ABILITIES[ability] || {})) {
+                mult[stat] = (mult[stat] || 1) * m;
+            }
+        }
+        return mult;
+    }
+
+    // The calc clones inside calculate() and recomputes rawStats from the species,
+    // so the multiplier has to be re-applied on every clone (see proto.clone below).
+    function calcOmApplyStatMult(pokemon) {
+        for (const [stat, m] of Object.entries(pokemon.__qolOmStatMult || {})) {
+            const value = Math.floor(pokemon.rawStats[stat] * m);
+            pokemon.rawStats[stat] = value;
+            if (pokemon.stats) pokemon.stats[stat] = value;
         }
     }
 
-    let preparedMove = move;
-    let preparedField = field;
-    if (!active) return {move: preparedMove, field: preparedField};
+    // ---------- tracking ----------
 
-    const own = attacker?.__qolOmAbilities || [];
-
-    // Skill Link: multi-hit moves always hit the maximum number of times.
-    if (own.includes('Skill Link') && move) {
-        const range = attacker.gen?.moves?.get?.(toSearchId(move.name))?.multihit;
-        if (Array.isArray(range) && move.hits !== range[1]) {
-            preparedMove = move.clone();
-            preparedMove.hits = range[1];
+    function calcOmHasAbility(...queries) {
+        if (this.__qolOmCleared) return false;
+        const active = calcOmActiveAbilities(this);
+        for (const query of queries) {
+            if (CALC_OM_STAT_ABILITIES[query]) continue; // applied via rawStats instead
+            if (active.includes(query)) {
+                this.__qolOmQueried.add(query);
+                return true;
+            }
         }
+        return false;
     }
 
-    // Steely Spirit boosts the user's Steel moves; the calc stores it on the side.
-    const side = field?.attackerSide;
-    if (own.includes('Steely Spirit') && side && 'isSteelySpirit' in side && !side.isSteelySpirit) {
-        preparedField = field.clone();
-        preparedField.attackerSide.isSteelySpirit = true;
-    }
+    // Mimics the calc's own "ability changed -> set weather/terrain" handler, but for
+    // the whole ability pool. Runs on switch-in only, so a manual weather pick isn't
+    // overwritten on every refresh. Later switch-ins win, like in-game.
+    function calcOmAutoSetField(side) {
+        if (!calcOmAbilityMode() || typeof window.createPokemon !== 'function') return;
+        const form = window.$(`#${side}`);
+        if (!form.length) return;
 
-    return {move: preparedMove, field: preparedField};
-}
+        const pokemon = window.createPokemon(form); // tracked by applyCalcOm in ability modes
+        const abilities = calcOmActiveAbilities(pokemon);
 
-// Abilities per species, from the calculator's own data PLUS Showdown's pokedex.json
-// (the calculator's data may only list a species' first ability).
-let calcOmPsDex = null;
-let calcOmPsDexRequested = false;
- 
-function calcOmLoadPsDex(onLoad) {
-    if (calcOmPsDex || calcOmPsDexRequested) return;
-    calcOmPsDexRequested = true;
-    fetch('https://play.pokemonshowdown.com/data/pokedex.json')
-        .then((response) => response.json())
-        .then((data) => {
-            calcOmPsDex = data;
-            if (typeof onLoad === 'function') onLoad();
-        })
-        .catch((error) => console.warn(LOG, 'Could not load Pokédex abilities:', error));
-}
- 
-function calcOmSpeciesAbilityList(species) {
-    const names = new Set();
-    const own = species?.abilities;
-    for (const name of Array.isArray(own) ? own : Object.values(own || {})) {
-        if (name) names.add(name);
-    }
-    const extra = calcOmPsDex?.[toSearchId(species?.name)]?.abilities;
-    for (const name of Object.values(extra || {})) {
-        if (name) names.add(name);
-    }
-    return [...names];
-}
- 
-const calcOmSpeciesAbilities = (pokemon) => calcOmSpeciesAbilityList(pokemon?.species);
- 
-// Skill Link is the one ability the Move constructor reads, so it needs a manual nudge.
-function calcOmApplySkillLink(pokemon) {
-    if (!pokemon.__qolOmAbilities?.includes('Skill Link')) return;
-    for (const move of pokemon.moves || []) {
-        if (!move || typeof move !== 'object' || move.name === '(No Move)') continue;
-        const range = pokemon.gen?.moves?.get?.(toSearchId(move.name))?.multihit;
-        if (Array.isArray(range)) move.hits = range[1];
-    }
-}
- 
-// Makes a Pokémon "have" several abilities at once. When the calculator reads
-// the ability immediately after a successful hasAbility() check to build its
-// description, report the complete active set so copied calcs show Pokébilities
-// for both sides, not only the ability that happened to be checked first.
-function calcOmTrackAbilities(pokemon, abilities) {
-    pokemon.__qolOmAbilities = abilities.slice();
-
-    // The calculator clones Pokémon into an internal class whose prototype is
-    // different from window.calc.Pokemon.prototype. Give each tracked instance
-    // its own ability query so the calculation clone sees every active ability.
-    const currentHasAbility = pokemon.hasAbility;
-    if (typeof currentHasAbility === 'function' && !currentHasAbility.__qolPokebilitiesHasAbility) {
-        const pokebilitiesHasAbility = function (...queries) {
-            if (!this.__qolOmTracked) return currentHasAbility.apply(this, queries);
-            if (this.__qolOmCleared) return false;
-            return queries.some((ability) => ability === this.__qolOmReal ||
-                (this.__qolOmAbilities || []).includes(ability));
+        const pick = (table) => {
+            const name = abilities.find((a) => table[a]);
+            const value = name && table[name];
+            return typeof value === 'function' ? value() : value || '';
         };
-        pokebilitiesHasAbility.__qolPokebilitiesHasAbility = true;
-        pokemon.hasAbility = pokebilitiesHasAbility;
+        const weather = pick(CALC_OM_WEATHER_ABILITIES);
+        const terrain = pick(CALC_OM_TERRAIN_ABILITIES);
+        calcOmDebug('auto field', side, {abilities, weather, terrain});
+
+        const press = (name, value) => {
+            if (!value) return;
+            const input = document.querySelector(`input[name="${name}"][value="${value}"]`);
+            if (!input) { calcOmDebug(`no ${name} input found for`, value); return; }
+            if (!input.checked) {
+                input.checked = true;
+                window.$(input).trigger('change');
+            }
+        };
+        press('weather', weather);
+        press('terrain', terrain);
     }
 
-    if (pokemon.__qolOmTracked) return;
- 
-    pokemon.__qolOmTracked = true;
-    pokemon.__qolOmReal = pokemon.ability;
-    pokemon.__qolOmCleared = false; // true once something (e.g. Mold Breaker) blanks the ability
-    pokemon.__qolOmUsed = [];
-    pokemon.__qolOmPending = null;
- 
-    Object.defineProperty(pokemon, 'ability', {
-        configurable: true,
-        enumerable: true,
-        get() {
-            const pending = this.__qolOmPending;
-            if (pending) {
-                this.__qolOmPending = null;
-                if (!this.__qolOmUsed.includes(pending)) this.__qolOmUsed.push(pending);
-                const active = new Set([this.__qolOmReal, ...(this.__qolOmAbilities || [])].filter(Boolean));
-                return [...active].join(' + ');
+    // ---------- prepare: everything we apply ourselves ----------
+
+    function calcOmFieldFromAbilities(field, attacker, defender) {
+        if (!field || typeof field.clone !== 'function') return field;
+
+        const abilities = [...calcOmActiveAbilities(attacker), ...calcOmActiveAbilities(defender)];
+        const first = (table) => {
+            const name = abilities.find((a) => table[a]);
+            const value = name && table[name];
+            return typeof value === 'function' ? value() : value || '';
+        };
+
+        const next = field.clone();
+        let changed = false;
+
+        // An explicit weather/terrain chosen in the UI always wins.
+        const weather = first(CALC_OM_WEATHER_ABILITIES);
+        if (weather && !next.weather) { next.weather = weather; changed = true; }
+
+        const terrain = first(CALC_OM_TERRAIN_ABILITIES);
+        if (terrain && !next.terrain) { next.terrain = terrain; changed = true; }
+
+        // Ruin flags are field-wide; the calc exempts the holder.
+        for (const [ability, flag] of Object.entries(CALC_OM_RUIN_FLAGS)) {
+            if (abilities.includes(ability) && flag in next && !next[flag]) { next[flag] = true; changed = true; }
+        }
+
+        const side = next.attackerSide;
+
+
+        return changed ? next : field;
+    }
+
+    function calcOmPrepareCalculation(attacker, defender, move, field) {
+        const mode = calcOmSelected();
+        const active = CALC_OM_ABILITY_MODES.has(mode);
+
+        for (const pokemon of [attacker, defender]) {
+            if (!pokemon?.species) continue;
+            if (active) {
+                calcOmTrackAbilities(pokemon, calcOmAbilityPool(pokemon, mode));
+                pokemon.__qolOmStatMult = calcOmStatMultipliers(pokemon);
+            } else if (pokemon.__qolOmTracked) {
+                pokemon.__qolOmAbilities = [pokemon.__qolOmReal].filter(Boolean); // mode off: real ability only
+                pokemon.__qolOmStatMult = null;
             }
-            return this.__qolOmReal;
-        },
-        set(value) {
-            this.__qolOmReal = value;
-            this.__qolOmCleared = !value;
-        },
-    });
-}
- 
-function installCalcOmAbilitySupport() {
-    const calcNamespace = window.calc;
-    const proto = calcNamespace?.Pokemon?.prototype;
- 
-    if (!proto) {
-        console.warn(LOG, 'calc.Pokemon not found; Pokébilities will not change calculations.');
-        return true; // don't block the other OM controls
+        }
+        if (!active) return {move, field};
+
+        // Skill Link: multi-hit moves always hit the maximum number of times.
+        let preparedMove = move;
+        if (move && calcOmActiveAbilities(attacker).includes('Skill Link')) {
+            const range = attacker.gen?.moves?.get?.(toSearchId(move.name))?.multihit;
+            if (Array.isArray(range) && move.hits !== range[1]) {
+                preparedMove = move.clone();
+                preparedMove.hits = range[1];
+            }
+        }
+
+        return {move: preparedMove, field: calcOmFieldFromAbilities(field, attacker, defender)};
     }
-    if (proto.__qolPokebilitiesPatched) return true;
- 
-    const originalHasAbility = proto.hasAbility;
-    const originalClone = proto.clone;
-    if (typeof originalHasAbility !== 'function' || typeof originalClone !== 'function') {
-        console.warn(LOG, 'Pokemon.hasAbility/clone missing; Pokébilities will not change calculations.');
-        return true;
-    }
- 
-    proto.hasAbility = function (...abilities) {
-        if (!this.__qolOmTracked) return originalHasAbility.apply(this, abilities);
-        if (this.__qolOmCleared) return false; // ability suppressed (Mold Breaker etc.)
- 
-        const real = this.__qolOmReal;
-        const match = abilities.find((a) => a === real || this.__qolOmAbilities.includes(a));
-        if (!match) return false;
- 
-        this.__qolOmPending = match;
-        return true;
-    };
- 
-    proto.clone = function (...args) {
-        // Cloning reads `this.ability`; keep that from consuming a pending match.
-        const pending = this.__qolOmPending;
-        this.__qolOmPending = null;
-        let clone;
+
+    // ---------- attribution: only list abilities that change the result ----------
+
+    function calcOmResultSignature(result) {
+        const desc = Object.assign({}, result.rawDesc);
+        delete desc.attackerAbility;
+        delete desc.defenderAbility;
         try {
-            clone = originalClone.apply(this, args);
-        } finally {
-            this.__qolOmPending = pending;
+            return JSON.stringify([result.damage, desc]);
+        } catch (e) {
+            return String(result.damage);
         }
-        if (this.__qolOmTracked) {
-            calcOmTrackAbilities(clone, this.__qolOmAbilities);
-            clone.__qolOmCleared = this.__qolOmCleared;
-        }
-        return clone;
-    };
+    }
 
-    // Prepare both sides before each calculation and annotate the returned
-    // result description with every ability active under Pokébilities.
-    const originalCalculate = calcNamespace.calculate;
-    if (typeof originalCalculate === 'function' && !originalCalculate.__qolWrapped) {
-        const wrapped = function (gen, attacker, defender, move, field, ...rest) {
-            let prepared = {move, field};
-            try {
-                prepared = calcOmPrepareCalculation(attacker, defender, move, field);
-            } catch (error) {
-                console.error(LOG, 'Pokébilities preparation failed:', error);
+    const calcOmDebug = (...args) => { if (window.__qolOmDebug) console.log(LOG, ...args); };
+
+    function calcOmAnnotateResult(result, attacker, defender, run) {
+        const base = calcOmResultSignature(result);
+
+        // Collect candidates for BOTH sides before any re-run touches the query sets.
+        const targets = [
+            [attacker, result.attacker, 'attackerAbility', 'attacker'],
+            [defender, result.defender, 'defenderAbility', 'defender'],
+        ].map(([input, used, key, label]) => {
+            if (!input?.__qolOmTracked) {
+                calcOmDebug(label, 'skipped: input not tracked');
+                return null;
             }
-            const result = originalCalculate.call(
-                this, gen, attacker, defender, prepared.move, prepared.field, ...rest
+            if (!used?.__qolOmTracked) {
+                // The calc's clone lost our tracking: exclusions can't work, so keep the native text.
+                calcOmSupport.cloneLost = true;
+                calcOmDebug(label, 'skipped: result clone not tracked');
+                return null;
+            }
+
+            const active = calcOmActiveAbilities(input);
+            const queried = active.filter(
+                (a) => input.__qolOmQueried.has(a) || CALC_OM_PREPARED_ABILITIES.has(a)
             );
-            if (calcOmSelected() === 'pokebilities' && result?.rawDesc) {
-                for (const [pokemon, key] of [
-                    [result.attacker, 'attackerAbility'],
-                    [result.defender, 'defenderAbility'],
-                ]) {
-                    if (!pokemon?.__qolOmTracked || pokemon.__qolOmCleared) continue;
-                    const abilities = new Set([
-                        pokemon.__qolOmReal,
-                        ...(pokemon.__qolOmAbilities || []),
-                    ].filter(Boolean));
-                    if (abilities.size) result.rawDesc[key] = [...abilities].join(' ');
+            // If nothing was recorded, don't trust the prefilter: test everything.
+            return {input, key, label, active, candidates: queried.length ? queried : active};
+        });
+
+        for (const t of targets) {
+            if (!t) continue;
+            try {
+                const affecting = [];
+                for (const ability of t.candidates) {
+                    t.input.__qolOmExcluded = ability;
+                    try {
+                        if (calcOmResultSignature(run()) !== base) affecting.push(ability);
+                    } finally {
+                        t.input.__qolOmExcluded = null;
+                        t.input.__qolOmStatMult = calcOmStatMultipliers(t.input);
+                    }
+                }
+
+                calcOmDebug(t.label, {active: t.active, candidates: t.candidates, affecting});
+                if (affecting.length) result.rawDesc[t.key] = affecting.join(' ');
+                else delete result.rawDesc[t.key];
+            } catch (error) {
+                console.error(LOG, `Attribution failed for ${t.label}:`, error);
+            }
+        }
+    }
+
+    // ---------- install (#5) ----------
+
+    function installCalcOmAbilitySupport() {
+        if (calcOmSupport.ok) return true;
+
+        const fail = (reason) => { calcOmSupport.reason = reason; return false; };
+        const ns = window.calc;
+        const proto = ns?.Pokemon?.prototype;
+
+        if (!ns) return fail('window.calc is not defined yet');
+        if (!proto) return fail('calc.Pokemon.prototype is missing');
+        if (typeof proto.clone !== 'function') return fail('Pokemon.prototype.clone is missing');
+        if (typeof ns.calculate !== 'function') return fail('calc.calculate is missing');
+
+        // Keep tracking (and the stat multiplier) alive across the calc's own clones.
+        if (!proto.__qolCloneWrapped) {
+            const originalClone = proto.clone;
+            proto.clone = function (...args) {
+                const clone = originalClone.apply(this, args);
+                if (this.__qolOmTracked) {
+                    calcOmTrackAbilities(clone, this.__qolOmAbilities);
+                    clone.__qolOmCleared = this.__qolOmCleared;
+                    clone.__qolOmExcluded = this.__qolOmExcluded;
+                    clone.__qolOmShared = this.__qolOmShared;
+                    clone.__qolOmQueried = this.__qolOmQueried; // shared on purpose
+                    clone.__qolOmStatMult = this.__qolOmStatMult;
+                    calcOmApplyStatMult(clone);
+                }
+                return clone;
+            };
+            proto.__qolCloneWrapped = true;
+        }
+
+        const originalCalculate = ns.calculate;
+        const wrapped = function (gen, attacker, defender, move, field, ...rest) {
+            calcOmSupport.calls++;
+            calcOmSupport.cloneLost = false;
+            calcOmDebug('wrapper called, mode =', calcOmSelected() || '(none)');
+
+            const run = () => {
+                let prepared = {move, field};
+                try {
+                    prepared = calcOmPrepareCalculation(attacker, defender, move, field);
+                } catch (error) {
+                    console.error(LOG, 'Ability preparation failed:', error);
+                }
+                return originalCalculate.call(ns, gen, attacker, defender, prepared.move, prepared.field, ...rest);
+            };
+
+            if (!calcOmAbilityMode()) return run();
+
+            for (const p of [attacker, defender]) p?.__qolOmQueried?.clear();
+            const result = run();
+            if (result?.rawDesc) {
+                try {
+                    calcOmAnnotateResult(result, attacker, defender, run);
+                } catch (error) {
+                    console.error(LOG, 'Ability attribution failed:', error);
                 }
             }
             return result;
         };
-        wrapped.__qolWrapped = true;
+
+        // Namespace objects built by TS/webpack are often getter-only. Try the plain
+        // assignment, then defineProperty, then a Proxy over window.calc.
+        let installed = false;
+        try { ns.calculate = wrapped; installed = ns.calculate === wrapped; } catch (e) { /* read-only */ }
+        if (!installed) {
+            try {
+                Object.defineProperty(ns, 'calculate', {value: wrapped, configurable: true, writable: true});
+                installed = ns.calculate === wrapped;
+            } catch (e) { /* non-configurable */ }
+        }
+        if (!installed) {
+            try {
+                window.calc = new Proxy(ns, {
+                    get: (target, key, receiver) => (key === 'calculate' ? wrapped : Reflect.get(target, key, receiver)),
+                });
+                installed = window.calc.calculate === wrapped;
+            } catch (e) { /* window.calc not writable */ }
+        }
+        if (!installed) return fail('calc.calculate could not be wrapped (read-only namespace)');
+
+        calcOmSupport.ok = true;
+        calcOmSupport.reason = '';
+        console.info(LOG, 'Ability modes installed');
+        return true;
+    }
+
+    function calcOmStatusMessage() {
+        if (!calcOmAbilityMode()) return '';
+        if (!calcOmSupport.ok) return `Ability modes are not active: ${calcOmSupport.reason}`;
+        if (calcOmSupport.cloneLost) return 'Ability modes: the calc clones Pokémon without keeping their ability pool, so only the selected ability applies.';
+        if (calcOmSupport.neverCalled) return 'Ability modes: calc.calculate was wrapped but the page never called the wrapper (it uses a different reference).';
+        return '';
+    }
+
+    function calcOmAllAbilityNames() {
+        const names = new Set();
+        for (const n of window.calc?.ABILITIES?.[calcOmGenNumber()] || []) if (n) names.add(n);
         try {
-            calcNamespace.calculate = wrapped;
-        } catch (error) {
-            console.warn(LOG, 'calc.calculate is read-only; relying on createPokemon only.', error);
+            for (const a of calcOmGeneration()?.abilities || []) if (a?.name) names.add(a.name);
+        } catch (e) { /* not iterable in this build */ }
+        return [...names].sort((a, b) => a.localeCompare(b));
+    }
+
+    // ---------- Shared Power UI ----------
+
+    const calcOmSharedList = (group) => {
+        try { return JSON.parse(group.dataset.abilities || '[]'); } catch (e) { return []; }
+    };
+
+    function calcOmSharedAbilities(side) {
+        const group = document.querySelector(`.qol-om-shared-group[data-side="${side}"]`);
+        return group ? calcOmSharedList(group) : [];
+    }
+
+    function calcOmFillAbilityDatalist() {
+        let list = document.getElementById('qol-om-ability-list');
+        if (!list) {
+            list = document.createElement('datalist');
+            list.id = 'qol-om-ability-list';
+            document.body.appendChild(list);
+        }
+        const names = calcOmAllAbilityNames();
+        const key = `${calcOmGenNumber()}|${names.length}`;
+        if (list.dataset.key !== key) {
+            list.replaceChildren(...names.map((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                return option;
+            }));
+            list.dataset.key = key;
+        }
+        return names.length;
+    }
+
+    function calcOmRenderSharedChips(group) {
+        group.querySelector('.qol-om-chips').replaceChildren(
+            ...calcOmSharedList(group).map((name) => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'btn qol-om-chip';
+                chip.dataset.ability = name;
+                chip.title = 'Click to remove';
+                chip.textContent = `${name} ×`;
+                chip.style.cssText = 'width:auto;padding:0 -2px;margin:3px 3px 0 0;font-size:11px;line-height:18px;';
+                return chip;
+            })
+        );
+    }
+
+    function calcOmBuildSharedRow(side, form, fallbackAnchor) {
+    const group = document.createElement('div');
+    group.className = 'select qol-om-shared-group';
+    group.dataset.side = side;
+    group.dataset.abilities = '[]';
+    group.style.display = 'none';
+
+    const label = document.createElement('label');
+    label.textContent = 'Team Abilities';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'select';
+    input.setAttribute('list', 'qol-om-ability-list');
+    input.placeholder = '';
+    input.autocomplete = 'on';
+    input.style.width = '140px';
+
+    const chips = document.createElement('div');
+    chips.className = 'qol-om-chips';
+
+    group.append(label, ' ', input, chips);
+
+    const changed = () => document.dispatchEvent(new Event('qol-shared-change'));
+
+    const add = () => {
+        const typed = input.value.trim();
+        if (!typed) return;
+        const match = calcOmAllAbilityNames().find((n) => toSearchId(n) === toSearchId(typed));
+        if (!match) { input.style.outline = '3px solid #c0392b'; return; }
+        input.style.outline = 'cursor: pointer';
+
+        const list = calcOmSharedList(group);
+        if (!list.includes(match)) {
+            list.push(match);
+            group.dataset.abilities = JSON.stringify(list);
+            calcOmRenderSharedChips(group);
+            changed();
+        }
+        input.value = '';
+    };
+
+    input.addEventListener('change', add);
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); add(); }
+    });
+    input.addEventListener('input', () => { input.style.outline = ''; });
+
+    group.addEventListener('click', (event) => {
+        const chip = event.target.closest('.qol-om-chip');
+        if (!chip) return;
+        group.dataset.abilities = JSON.stringify(calcOmSharedList(group).filter((a) => a !== chip.dataset.ability));
+        calcOmRenderSharedChips(group);
+        changed();
+    });
+
+    // Indicate that ability chips are clickable.
+    group.addEventListener('mouseover', (event) => {
+        const chip = event.target.closest('.qol-om-chip');
+        if (chip) chip.style.cursor = 'pointer';
+    });
+
+    const abilityRow = form?.querySelector('.ability')?.closest('.info-group');
+    (abilityRow || fallbackAnchor).insertAdjacentElement('afterend', group);
+    return group;
+}
+
+    // Abilities per species, from the calculator's own data PLUS Showdown's pokedex.json
+    // (the calculator's data may only list a species' first ability).
+    let calcOmPsDex = null;
+    let calcOmPsDexRequested = false;
+
+    function calcOmLoadPsDex(onLoad) {
+        if (calcOmPsDex || calcOmPsDexRequested) return;
+        calcOmPsDexRequested = true;
+        fetch('https://play.pokemonshowdown.com/data/pokedex.json')
+            .then((response) => response.json())
+            .then((data) => {
+            calcOmPsDex = data;
+            if (typeof onLoad === 'function') onLoad();
+        })
+            .catch((error) => console.warn(LOG, 'Could not load Pokédex abilities:', error));
+    }
+
+    function calcOmSpeciesAbilityList(species) {
+        const names = new Set();
+        const own = species?.abilities;
+        for (const name of Array.isArray(own) ? own : Object.values(own || {})) {
+            if (name) names.add(name);
+        }
+        const extra = calcOmPsDex?.[toSearchId(species?.name)]?.abilities;
+        for (const name of Object.values(extra || {})) {
+            if (name) names.add(name);
+        }
+        return [...names];
+    }
+
+    const calcOmSpeciesAbilities = (pokemon) => calcOmSpeciesAbilityList(pokemon?.species);
+
+    // Skill Link is the one ability the Move constructor reads, so it needs a manual nudge.
+    function calcOmApplySkillLink(pokemon) {
+        if (!pokemon.__qolOmAbilities?.includes('Skill Link')) return;
+        for (const move of pokemon.moves || []) {
+            if (!move || typeof move !== 'object' || move.name === '(No Move)') continue;
+            const range = pokemon.gen?.moves?.get?.(toSearchId(move.name))?.multihit;
+            if (Array.isArray(range)) move.hits = range[1];
         }
     }
 
-    proto.__qolPokebilitiesPatched = true;
-    return true;
-}
+    // Makes a Pokémon "have" several abilities at once. When the calculator reads
+    // the ability immediately after a successful hasAbility() check to build its
+    // description, report the complete active set so copied calcs show Pokébilities
+    // for both sides, not only the ability that happened to be checked first.
+    function calcOmTrackAbilities(pokemon, abilities) {
+        pokemon.__qolOmAbilities = abilities.slice();
+        if (pokemon.__qolOmTracked) return;
+
+        pokemon.__qolOmTracked = true;
+        pokemon.__qolOmReal = pokemon.ability;       // read BEFORE redefining
+        pokemon.__qolOmCleared = false;              // true once something (Mold Breaker) blanks it
+        pokemon.__qolOmExcluded = null;              // leave-one-out probe
+        pokemon.__qolOmQueried = new Set();          // abilities the calc asked about (shared with clones)
+        pokemon.__qolOmShared = pokemon.__qolOmShared || [];
+        pokemon.__qolOmStatMult = null;
+
+        // Own property: shadows the prototype on this instance only.
+        Object.defineProperty(pokemon, 'hasAbility', {configurable: true, writable: true, value: calcOmHasAbility});
+
+        Object.defineProperty(pokemon, 'ability', {
+            configurable: true,
+            enumerable: true,
+            get() {
+                if (window.__qolOmTrace) {
+                    console.debug(LOG, 'direct .ability read:', new Error().stack.split('\n').slice(2, 4).join(' | '));
+                }
+                return this.__qolOmReal;
+            },
+            set(value) {
+                this.__qolOmReal = value;
+                this.__qolOmCleared = !value;
+                if (value && !this.__qolOmAbilities.includes(value)) this.__qolOmAbilities.push(value);
+            },
+        });
+    }
+
 
     function calcOmSpeciesStats(species) {
         return species?.baseStats || species?.bs || null;
     }
 
-function calcOmSpeciesStat(species, stat) {
-    const stats = calcOmSpeciesStats(species);
-    if (!stats) return 0;
-    const legacy = {atk: 'at', def: 'df', spa: 'sa', spd: 'sd', spe: 'sp'}[stat] || stat;
-    const value = stats[stat] ?? stats[legacy] ??
-        ((stat === 'spa' || stat === 'spd') ? stats.sl : undefined);
-    return Number(value) || 0;
-}
+    function calcOmSpeciesStat(species, stat) {
+        const stats = calcOmSpeciesStats(species);
+        if (!stats) return 0;
+        const legacy = {atk: 'at', def: 'df', spa: 'sa', spd: 'sd', spe: 'sp'}[stat] || stat;
+        const value = stats[stat] ?? stats[legacy] ??
+              ((stat === 'spa' || stat === 'spd') ? stats.sl : undefined);
+        return Number(value) || 0;
+    }
 
     function calcOmSpeciesTypes(species) {
         return species?.types || [];
@@ -4342,8 +4676,8 @@ function calcOmSpeciesStat(species, stat) {
         const name = document.querySelector(`#qol-om-source-${side}`)?.value?.trim();
         if (!name) return null;
         const species = pokeInfo?.find?.('.set-selector')?.length
-            ? pokemon.gen?.species?.get?.(toSearchId(name))
-            : null;
+        ? pokemon.gen?.species?.get?.(toSearchId(name))
+        : null;
         return species?.exists ? species : null;
     }
 
@@ -4359,7 +4693,7 @@ function calcOmSpeciesStat(species, stat) {
         if (oldMaxHP > 0 && pokemon.rawStats.hp !== oldMaxHP) {
             pokemon.originalCurHP = oldCurrentHP >= oldMaxHP
                 ? pokemon.rawStats.hp
-                : Math.max(1, Math.floor(oldCurrentHP * pokemon.rawStats.hp / oldMaxHP));
+            : Math.max(1, Math.floor(oldCurrentHP * pokemon.rawStats.hp / oldMaxHP));
         }
     }
 
@@ -4367,11 +4701,10 @@ function calcOmSpeciesStat(species, stat) {
         const mod = calcOmSelected();
         if (!mod || !pokemon?.species) return pokemon;
 
-        if (mod === 'pokebilities') {
-            // Every native ability, plus whatever is selected in the dropdown.
-            const abilities = new Set(calcOmSpeciesAbilities(pokemon));
-            if (pokemon.ability) abilities.add(pokemon.ability);
-            calcOmTrackAbilities(pokemon, [...abilities]);
+
+        if (CALC_OM_ABILITY_MODES.has(mod)) {
+            pokemon.__qolOmShared = mod === 'sharedpower' ? calcOmSharedAbilities(calcOmSide(pokeInfo)) : [];
+            calcOmTrackAbilities(pokemon, calcOmAbilityPool(pokemon, mod));
             calcOmApplySkillLink(pokemon);
             return pokemon;
         }
@@ -4390,7 +4723,7 @@ function calcOmSpeciesStat(species, stat) {
                 for (const stat of STATS) {
                     stats[stat] = stat === 'hp'
                         ? pokemon.species.baseStats[stat]
-                        : pokemon.species.baseStats[stat] + Math.floor(donor.baseStats[stat] / 4);
+                    : pokemon.species.baseStats[stat] + Math.floor(donor.baseStats[stat] / 4);
                 }
                 calcOmSetBaseStats(pokemon, stats);
             }
@@ -4419,37 +4752,37 @@ function calcOmSpeciesStat(species, stat) {
     }
 
     function calcOmGenNumber() {
-    const g = typeof gen !== 'undefined' ? gen : window.gen;
-    return Number(g) || 9;
-}
-
-function calcOmGeneration() {
-    try {
-        return window.calc?.Generations?.get?.(calcOmGenNumber());
-    } catch (e) {
-        return undefined;
+        const g = typeof gen !== 'undefined' ? gen : window.gen;
+        return Number(g) || 9;
     }
-}
 
-// Every species name available in the current generation.
-function calcOmAllSpeciesNames() {
-    const names = new Map(); // searchId -> display name
-    const add = (name) => {
-        const key = toSearchId(name);
-        if (key && !names.has(key)) names.set(key, String(name));
-    };
+    function calcOmGeneration() {
+        try {
+            return window.calc?.Generations?.get?.(calcOmGenNumber());
+        } catch (e) {
+            return undefined;
+        }
+    }
 
-    const legacy = (typeof pokedex !== 'undefined' && pokedex) || window.pokedex ||
-        window.calc?.SPECIES?.[calcOmGenNumber()] || {};
-    for (const [key, entry] of Object.entries(legacy)) add(entry?.name || key);
+    // Every species name available in the current generation.
+    function calcOmAllSpeciesNames() {
+        const names = new Map(); // searchId -> display name
+        const add = (name) => {
+            const key = toSearchId(name);
+            if (key && !names.has(key)) names.set(key, String(name));
+        };
 
-    const genSpecies = calcOmGeneration()?.species;
-    try {
-        for (const entry of genSpecies || []) add(entry?.name);
-    } catch (e) { /* not iterable in this build */ }
+        const legacy = (typeof pokedex !== 'undefined' && pokedex) || window.pokedex ||
+              window.calc?.SPECIES?.[calcOmGenNumber()] || {};
+        for (const [key, entry] of Object.entries(legacy)) add(entry?.name || key);
 
-    return [...names.values()].sort((a, b) => a.localeCompare(b));
-}
+        const genSpecies = calcOmGeneration()?.species;
+        try {
+            for (const entry of genSpecies || []) add(entry?.name);
+        } catch (e) { /* not iterable in this build */ }
+
+        return [...names.values()].sort((a, b) => a.localeCompare(b));
+    }
 
     function calcOmReadFormStats(pokeInfo) {
         const read = (field) => Number(pokeInfo.find(`.${field} .base`).val()) || 0;
@@ -4472,40 +4805,40 @@ function calcOmAllSpeciesNames() {
         }
     }
 
-function calcOmFormSpeciesName(pokeInfo) {
-    const forme = pokeInfo.find('.forme');
-    if (forme.length && forme.is(':visible') && forme.val()) return String(forme.val());
-    const input = pokeInfo.find('input.set-selector, select.set-selector').first();
-    const selected = String(
-        input.val() || pokeInfo.find('.select2-chosen').first().text() || ''
-    );
-    return selected.split(' (')[0].trim();
-}
-
-function calcOmFormSpecies(pokeInfo, genData) {
-    return calcOmFindSpecies(calcOmFormSpeciesName(pokeInfo), genData);
-}
-
-// Native (unmodified) stats/types straight from the species data, never from the form.
-function calcOmNativeForm(pokeInfo, genData) {
-    const species = calcOmFormSpecies(pokeInfo, genData);
-    if (!calcOmSpeciesStats(species)) return null;
-    const stats = {};
-    for (const stat of STATS) stats[stat] = calcOmSpeciesStat(species, stat);
-    return {species, stats, types: calcOmSpeciesTypes(species).slice(0, 2)};
-}
-
-// Picks the right "no type" option instead of hardcoding one.
-function calcOmSetType(select, type) {
-    if (!select.length) return;
-    const options = select.find('option').toArray();
-    let match = type ? options.find((o) => o.value === type) : null;
-    if (!match && !type) {
-        match = options.find((o) =>
-            o.value === '(none)' || o.value === '' || /^\(none\)$/i.test(o.textContent.trim()));
+    function calcOmFormSpeciesName(pokeInfo) {
+        const forme = pokeInfo.find('.forme');
+        if (forme.length && forme.is(':visible') && forme.val()) return String(forme.val());
+        const input = pokeInfo.find('input.set-selector, select.set-selector').first();
+        const selected = String(
+            input.val() || pokeInfo.find('.select2-chosen').first().text() || ''
+        );
+        return selected.split(' (')[0].trim();
     }
-    if (match) select.val(match.value);
-}
+
+    function calcOmFormSpecies(pokeInfo, genData) {
+        return calcOmFindSpecies(calcOmFormSpeciesName(pokeInfo), genData);
+    }
+
+    // Native (unmodified) stats/types straight from the species data, never from the form.
+    function calcOmNativeForm(pokeInfo, genData) {
+        const species = calcOmFormSpecies(pokeInfo, genData);
+        if (!calcOmSpeciesStats(species)) return null;
+        const stats = {};
+        for (const stat of STATS) stats[stat] = calcOmSpeciesStat(species, stat);
+        return {species, stats, types: calcOmSpeciesTypes(species).slice(0, 2)};
+    }
+
+    // Picks the right "no type" option instead of hardcoding one.
+    function calcOmSetType(select, type) {
+        if (!select.length) return;
+        const options = select.find('option').toArray();
+        let match = type ? options.find((o) => o.value === type) : null;
+        if (!match && !type) {
+            match = options.find((o) =>
+                                 o.value === '(none)' || o.value === '' || /^\(none\)$/i.test(o.textContent.trim()));
+        }
+        if (match) select.val(match.value);
+    }
 
     function calcOmFormSource(pokeInfo, genData) {
         const side = calcOmSide(pokeInfo);
@@ -4542,9 +4875,9 @@ function calcOmSetType(select, type) {
         return null;
     }
 
-function calcOmFormModifiedStats(pokeInfo, pokemon, mod, genData, baseStats) {
-    const stats = Object.assign({}, baseStats);
-    const original = Object.assign({}, stats);
+    function calcOmFormModifiedStats(pokeInfo, pokemon, mod, genData, baseStats) {
+        const stats = Object.assign({}, baseStats);
+        const original = Object.assign({}, stats);
 
         if (mod === 'badnboosted') {
             for (const stat of STATS) if (stats[stat] <= 70) stats[stat] *= 2;
@@ -4588,289 +4921,341 @@ function calcOmFormModifiedStats(pokeInfo, pokemon, mod, genData, baseStats) {
     }
 
     function syncCalcOmForm(pokeInfo) {
-    if (!pokeInfo?.length || pokeInfo[0].__qolOmSyncing) return;
+        if (!pokeInfo?.length || pokeInfo[0].__qolOmSyncing) return;
 
-    const mod = calcOmSelected();
-    const formMod = mod && mod !== 'pokebilities' ? mod : '';
-    // Nothing to apply and nothing to undo.
-    if (!formMod && !pokeInfo.data('qolOmApplied')) return;
+        const mod = calcOmSelected();
 
-    const genData = calcOmGeneration();
-    const native = calcOmNativeForm(pokeInfo, genData);
-    if (!native) return;
+        const formMod = mod && !CALC_OM_ABILITY_MODES.has(mod) ? mod : '';
+        // Nothing to apply and nothing to undo.
+        if (!formMod && !pokeInfo.data('qolOmApplied')) return;
 
-    pokeInfo[0].__qolOmSyncing = true; // our own change triggers must not re-enter
-    try {
-        let stats = native.stats;
-        let types = native.types;
+        const genData = calcOmGeneration();
+        const native = calcOmNativeForm(pokeInfo, genData);
+        if (!native) return;
 
-        if (formMod) {
-            stats = calcOmFormModifiedStats(pokeInfo, native.species, formMod, genData, native.stats) || native.stats;
-            types = calcOmFormTypes(pokeInfo, native.species, formMod, genData) || native.types;
+        pokeInfo[0].__qolOmSyncing = true; // our own change triggers must not re-enter
+        try {
+            let stats = native.stats;
+            let types = native.types;
+
+            if (formMod) {
+                stats = calcOmFormModifiedStats(pokeInfo, native.species, formMod, genData, native.stats) || native.stats;
+                types = calcOmFormTypes(pokeInfo, native.species, formMod, genData) || native.types;
+            }
+
+            calcOmWriteFormStats(pokeInfo, stats);
+            calcOmSetType(pokeInfo.find('.type1'), types[0]);
+            calcOmSetType(pokeInfo.find('.type2'), types[1]);
+
+            if (typeof window.calcHP === 'function') window.calcHP(pokeInfo);
+            if (typeof window.calcStats === 'function') window.calcStats(pokeInfo);
+            pokeInfo.find('.base, .type1, .type2').trigger('change');
+        } finally {
+            delete pokeInfo[0].__qolOmSyncing;
         }
 
-        calcOmWriteFormStats(pokeInfo, stats);
-        calcOmSetType(pokeInfo.find('.type1'), types[0]);
-        calcOmSetType(pokeInfo.find('.type2'), types[1]);
-
-        if (typeof window.calcHP === 'function') window.calcHP(pokeInfo);
-        if (typeof window.calcStats === 'function') window.calcStats(pokeInfo);
-        pokeInfo.find('.base, .type1, .type2').trigger('change');
-    } finally {
-        delete pokeInfo[0].__qolOmSyncing;
+        if (formMod) pokeInfo.data('qolOmApplied', formMod);
+        else pokeInfo.removeData('qolOmApplied');
     }
 
-    if (formMod) pokeInfo.data('qolOmApplied', formMod);
-    else pokeInfo.removeData('qolOmApplied');
-}
+    function installCalcOm() {
+    let attempts = 0;
+    const timer = setInterval(() => {
+        attempts++;
+        const group = document.querySelector('input.om-trigger')?.parentElement;
+        const originalCreatePokemon = window.createPokemon;
+        const originalAutoUpdateStats = window.autoUpdateStats;
+        const ready = group && typeof originalCreatePokemon === 'function' &&
+            typeof originalAutoUpdateStats === 'function';
+        if (!ready) {
+            if (attempts > 120) clearInterval(timer);
+            return;
+        }
+        clearInterval(timer);
 
-function installCalcOm() {
-        let attempts = 0;
-        const timer = setInterval(() => {
-            attempts++;
-            const group = document.querySelector('input.om-trigger')?.parentElement;
-            const originalCreatePokemon = window.createPokemon;
-            const originalAutoUpdateStats = window.autoUpdateStats;
-            const ready = group && typeof originalCreatePokemon === 'function' &&
-                typeof originalAutoUpdateStats === 'function' && installCalcOmAbilitySupport();
-            if (!ready) {
-                if (attempts > 120) clearInterval(timer);
-                return;
+        // ---------- OM toggle buttons ----------
+
+        const row = document.createElement('div');
+        row.className = 'qol-calc-om-controls';
+        row.setAttribute('aria-label', 'Pokémon Showdown Teambuilder QOL OM modifiers');
+        row.setAttribute('role', 'group');
+        const buttonRows = [];
+        for (let i = 0; i < CALC_OM_OPTIONS.length; i += 3) {
+            const buttonRow = document.createElement('div');
+            buttonRow.className = 'qol-calc-om-row';
+            buttonRow.setAttribute('role', 'group');
+            buttonRow.setAttribute('aria-label', 'Pokémon Showdown Teambuilder QOL OM modifiers');
+            buttonRow.style.cssText = 'margin:5px auto auto;display:flex;justify-content:center;';
+            buttonRows.push(buttonRow);
+        }
+
+        for (const [index, [id, labelText, description]] of CALC_OM_OPTIONS.entries()) {
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'visually-hidden qol-calc-om';
+            input.id = `qol-om-${id}`;
+            input.value = id;
+            input.title = description;
+
+            const label = document.createElement('label');
+            const position = index % 3;
+            const rowLength = Math.min(3, CALC_OM_OPTIONS.length - Math.floor(index / 3) * 3);
+            const buttonPosition = rowLength === 1 ? '' : position === 0 ? 'btn-left' : position === rowLength - 1 ? 'btn-right' : 'btn-mid';
+            label.className = `btn btn-xxxwide ${buttonPosition}`.trim();
+            label.htmlFor = input.id;
+            label.textContent = labelText;
+            label.title = description;
+
+            buttonRows[Math.floor(index / 3)].append(input, label);
+        }
+        buttonRows.forEach((buttonRow) => row.append(buttonRow));
+        group.insertAdjacentElement('afterend', row);
+
+        // ---------- status line + ability support install ----------
+
+        const status = document.createElement('div');
+        status.className = 'qol-calc-om-status';
+        status.style.cssText = 'text-align:center;color:#c0392b;font-size:12px;margin:4px 0;display:none;';
+        row.insertAdjacentElement('afterend', status);
+
+        const updateStatus = () => {
+            const msg = calcOmStatusMessage();
+            status.textContent = msg;
+            status.style.display = msg ? 'block' : 'none';
+        };
+        calcOmSupport.onChange = updateStatus;
+
+        let supportAttempts = 0;
+        const supportTimer = window.setInterval(() => {
+            supportAttempts++;
+            if (installCalcOmAbilitySupport()) {
+                window.clearInterval(supportTimer);
+            } else if (supportAttempts >= 240) {
+                window.clearInterval(supportTimer);
+                console.error(LOG, 'Ability modes unavailable:', calcOmSupport.reason);
             }
-            clearInterval(timer);
+            updateStatus();
+        }, 250);
 
-            // ---------- OM toggle buttons ----------
+        // ---------- per-side fields (donor / god / slot) + Shared Power row ----------
 
-            const row = document.createElement('div');
-            row.className = 'qol-calc-om-controls';
-            row.setAttribute('aria-label', 'Pokémon Showdown Teambuilder QOL OM modifiers');
-            row.setAttribute('role', 'group');
-            const buttonRows = [];
-            for (let i = 0; i < CALC_OM_OPTIONS.length; i += 3) {
-                const buttonRow = document.createElement('div');
-                buttonRow.className = 'qol-calc-om-row';
-                buttonRow.setAttribute('role', 'group');
-                buttonRow.setAttribute('aria-label', 'Pokémon Showdown Teambuilder QOL OM modifiers');
-                buttonRow.style.cssText = 'margin:5px auto auto;display:flex;justify-content:center;';
-                buttonRows.push(buttonRow);
+        for (const side of ['p1', 'p2']) {
+            const form = document.querySelector(`#${side}`);
+            const forme = form?.querySelector('.forme');
+            const anchor = forme?.closest('.info-group') || forme?.closest('div');
+            if (!anchor) continue;
+
+            const fields = document.createElement('div');
+            fields.className = 'qol-calc-om-fields';
+            fields.dataset.side = side;
+            fields.style.cssText = 'display:none;flex-direction:column;align-items:flex-start;width:100%;box-sizing:border-box;flex:0 0 100%;clear:both;margin:4px 0 0;padding:0;';
+
+            const sourceLabel = document.createElement('div');
+            sourceLabel.className = 'qol-om-source-label';
+            sourceLabel.style.cssText = 'display:inline-flex;align-items:center;gap:5px;';
+            const sourceText = document.createElement('span');
+            const source = document.createElement('select');
+            source.id = `qol-om-source-${side}`;
+            // No "item" class: that would collide with the real item field.
+            source.className = 'qol-calc-om-source';
+            const emptyOption = document.createElement('option');
+            emptyOption.value = '';
+            emptyOption.textContent = '(none)';
+            source.append(emptyOption);
+            sourceLabel.append(sourceText, source);
+
+            const slotLabel = document.createElement('label');
+            slotLabel.className = 'qol-om-slot-label';
+            slotLabel.style.cssText = 'display:none;align-items:center;gap:5px;margin:4px 0 0;';
+            const slotText = document.createElement('span');
+            slotText.textContent = 'Slot';
+            const slot = document.createElement('select');
+            slot.id = `qol-om-slot-${side}`;
+            for (const stat of STATS) {
+                const option = document.createElement('option');
+                option.value = stat;
+                option.textContent = stat.toUpperCase();
+                slot.append(option);
             }
+            slotLabel.append(slotText, slot);
 
-            for (const [index, [id, labelText, description]] of CALC_OM_OPTIONS.entries()) {
-                const input = document.createElement('input');
-                input.type = 'checkbox';
-                input.className = 'visually-hidden qol-calc-om';
-                input.id = `qol-om-${id}`;
-                input.value = id;
-                input.title = description;
+            fields.append(sourceLabel, slotLabel);
+            anchor.insertAdjacentElement('afterend', fields);
 
-                const label = document.createElement('label');
-                const position = index % 3;
-                const rowLength = Math.min(3, CALC_OM_OPTIONS.length - Math.floor(index / 3) * 3);
-                const buttonPosition = rowLength === 1 ? '' : position === 0 ? 'btn-left' : position === rowLength - 1 ? 'btn-right' : 'btn-mid';
-                label.className = `btn btn-xxxwide ${buttonPosition}`.trim();
-                label.htmlFor = input.id;
-                label.textContent = labelText;
-                label.title = description;
+            calcOmBuildSharedRow(side, form, fields);
+        }
 
-                buttonRows[Math.floor(index / 3)].append(input, label);
-            }
-            buttonRows.forEach((buttonRow) => row.append(buttonRow));
-            group.insertAdjacentElement('afterend', row);
+        // ---------- searchable Pokémon pickers ----------
 
-            // ---------- per-side donor / god / slot fields ----------
+        const populateOmSourcePickers = () => {
+            const species = calcOmAllSpeciesNames();
+            const listKey = `${calcOmGenNumber()}|${species.length}`;
 
-            for (const side of ['p1', 'p2']) {
-                const form = document.querySelector(`#${side}`);
-                const forme = form?.querySelector('.forme');
-                const anchor = forme?.closest('.info-group') || forme?.closest('div');
-                if (!anchor) continue;
-
-                const fields = document.createElement('div');
-                fields.className = 'qol-calc-om-fields';
-                fields.dataset.side = side;
-                fields.style.cssText = 'display:none;flex-direction:column;align-items:flex-start;width:100%;box-sizing:border-box;flex:0 0 100%;clear:both;margin:4px 0 0;padding:0;';
-
-                const sourceLabel = document.createElement('div');
-                sourceLabel.className = 'qol-om-source-label';
-                sourceLabel.style.cssText = 'display:inline-flex;align-items:center;gap:5px;';
-                const sourceText = document.createElement('span');
-                const source = document.createElement('select');
-                source.id = `qol-om-source-${side}`;
-                // No "item" class: that would collide with the real item field.
-                source.className = 'qol-calc-om-source';
-                const emptyOption = document.createElement('option');
-                emptyOption.value = '';
-                emptyOption.textContent = '(none)';
-                source.append(emptyOption);
-                sourceLabel.append(sourceText, source);
-
-                const slotLabel = document.createElement('label');
-                slotLabel.className = 'qol-om-slot-label';
-                slotLabel.style.cssText = 'display:none;align-items:center;gap:5px;margin:4px 0 0;';
-                const slotText = document.createElement('span');
-                slotText.textContent = 'Slot';
-                const slot = document.createElement('select');
-                slot.id = `qol-om-slot-${side}`;
-                for (const stat of STATS) {
-                    const option = document.createElement('option');
-                    option.value = stat;
-                    option.textContent = stat.toUpperCase();
-                    slot.append(option);
+            for (const source of document.querySelectorAll('select.qol-calc-om-source')) {
+                const $source = window.$(source);
+                if (source.dataset.qolListKey !== listKey) {
+                    const selected = source.value;
+                    source.replaceChildren(new Option('(none)', ''));
+                    for (const name of species) source.add(new Option(name, name));
+                    source.dataset.qolListKey = listKey;
+                    if ([...source.options].some((o) => o.value === selected)) source.value = selected;
                 }
-                slotLabel.append(slotText, slot);
+                if ($source.select2 && !$source.data('select2')) {
+                    $source.select2({dropdownAutoWidth: true, width: '170px'});
+                }
+                if ($source.data('select2')) $source.select2('val', source.value);
+            }
+            return species.length;
+        };
 
-                fields.append(sourceLabel, slotLabel);
-                anchor.insertAdjacentElement('afterend', fields);
+        populateOmSourcePickers();
+        calcOmFillAbilityDatalist();
+
+        // The calculator loads its dex asynchronously; keep retrying until populated.
+        let dexLoadAttempts = 0;
+        const dexLoadTimer = window.setInterval(() => {
+            dexLoadAttempts++;
+            const speciesCount = populateOmSourcePickers();
+            const abilityCount = calcOmFillAbilityDatalist();
+            if ((speciesCount && abilityCount) || dexLoadAttempts >= 120) window.clearInterval(dexLoadTimer);
+        }, 500);
+
+        // ---------- show/hide the per-mode fields ----------
+
+        const updateInlineControls = () => {
+            const mod = calcOmSelected();
+            const sourceModes = {
+                franticfusions: ['Donor', 'Fusion donor'],
+                godlygift: ['God', 'God Pokémon'],
+            };
+            const config = sourceModes[mod];
+            const sharedMode = mod === 'sharedpower';
+
+            for (const fields of document.querySelectorAll('.qol-calc-om-fields')) {
+                const side = fields.dataset.side || 'p1';
+                const sourceLabel = fields.querySelector('.qol-om-source-label');
+                const sourceText = sourceLabel.querySelector('span');
+                const source = sourceLabel.querySelector('select.qol-calc-om-source');
+                const slotLabel = fields.querySelector('.qol-om-slot-label');
+
+                fields.style.display = config ? 'flex' : 'none';
+                sourceText.textContent = config ? config[0] : '';
+                if (source.options?.[0]) source.options[0].textContent = '(none)';
+                source.title = config ? config[1] : '';
+                source.setAttribute('aria-label', `${side.toUpperCase()} ${config?.[0] || 'OM source'}`);
+                slotLabel.style.display = mod === 'godlygift' ? 'inline-flex' : 'none';
             }
 
-            // ---------- searchable Pokémon pickers ----------
+            for (const sharedGroup of document.querySelectorAll('.qol-om-shared-group')) {
+                sharedGroup.style.display = sharedMode ? '' : 'none';
+            }
+            updateStatus();
+        };
 
-const populateOmSourcePickers = () => {
-    const species = calcOmAllSpeciesNames();
-    const listKey = `${calcOmGenNumber()}|${species.length}`;
+        // ---------- wrap the calculator's own functions ----------
 
-    for (const source of document.querySelectorAll('select.qol-calc-om-source')) {
-        const $source = window.$(source);
-        if (source.dataset.qolListKey !== listKey) {
-            const selected = source.value;
-            source.replaceChildren(new Option('(none)', ''));
-            for (const name of species) source.add(new Option(name, name));
-            source.dataset.qolListKey = listKey;
-            if ([...source.options].some((o) => o.value === selected)) source.value = selected;
-        }
-        if ($source.select2 && !$source.data('select2')) {
-            $source.select2({dropdownAutoWidth: true, width: '170px'});
-        }
-        if ($source.data('select2')) $source.select2('val', source.value);
-    }
-    return species.length;
-};
-            populateOmSourcePickers();
+        window.createPokemon = function (pokeInfo, ...args) {
+            const pokemon = originalCreatePokemon.call(this, pokeInfo, ...args);
+            if (typeof pokeInfo === 'string') return pokemon;
+            const applied = window.$(pokeInfo).data('qolOmApplied');
+            return applied === calcOmSelected() ? pokemon : applyCalcOm(pokemon, pokeInfo);
+        };
 
-            // The calculator loads its dex asynchronously; keep retrying until
-            // the list is populated (the list-key check avoids rebuilding every tick).
-            let dexLoadAttempts = 0;
-            const dexLoadTimer = window.setInterval(() => {
-                dexLoadAttempts++;
-                if (populateOmSourcePickers() || dexLoadAttempts >= 120) window.clearInterval(dexLoadTimer);
+        window.autoUpdateStats = function (side, ...args) {
+            const pokeInfo = window.$(side);
+            pokeInfo.find('.ability option[data-qol-om="true"]').remove();
+            const result = originalAutoUpdateStats.call(this, side, ...args);
+            if (pokeInfo.length) syncCalcOmForm(pokeInfo);
+            return result;
+        };
+
+        const refreshForms = () => {
+            const callsBefore = calcOmSupport.calls;
+            for (const side of ['#p1', '#p2']) window.autoUpdateStats(side);
+            if (typeof window.performCalculationsOM === 'function') window.setTimeout(window.performCalculationsOM, 0);
+
+            // Detects "wrapper installed but the page never calls it".
+            window.setTimeout(() => {
+                calcOmSupport.neverCalled =
+                    calcOmAbilityMode() && calcOmSupport.ok && calcOmSupport.calls === callsBefore;
+                updateStatus();
             }, 500);
+        };
+        calcOmLoadPsDex(refreshForms);
 
-            // ---------- show/hide the per-mode fields ----------
+        // ---------- jQuery handlers (Select2 only fires jQuery events) ----------
 
-            const updateInlineControls = () => {
-                const mod = calcOmSelected();
-                const sourceModes = {
-                    franticfusions: ['Donor', 'Fusion donor'],
-                    godlygift: ['God', 'God Pokémon'],
-                };
-                    for (const fields of document.querySelectorAll('.qol-calc-om-fields')) {
-                    const side = fields.dataset.side || 'p1';
-                    const sourceLabel = fields.querySelector('.qol-om-source-label');
-                    const sourceText = sourceLabel.querySelector('span');
-                    const source = sourceLabel.querySelector('select.qol-calc-om-source');
+        for (const side of ['p1', 'p2']) {
+            const form = window.$(`#${side}`);
 
-                    const slotLabel = fields.querySelector('.qol-om-slot-label');
-                    const config = sourceModes[mod];
-                    fields.style.display = config ? 'flex' : 'none';
-                    sourceText.textContent = config ? config[0] : '';
-                    if (source.options?.[0]) source.options[0].textContent = '(none)';
-                    source.title = config ? config[1] : '';
-                    slotLabel.style.display = mod === 'godlygift' ? 'inline-flex' : 'none';
-                    source.setAttribute('aria-label', `${side.toUpperCase()} ${config?.[0] || 'OM source'}`);
+            // The native handler (registered earlier) has just overwritten the
+            // form with the new Pokémon's data, so our "applied" flag is no
+            // longer true. A new Pokémon switching in also sets weather/terrain.
+            form.find('input.set-selector, select.set-selector, .forme')
+                .off('change.qolCalcOm')
+                .on('change.qolCalcOm', () => {
+                    form.removeData('qolOmApplied');
+                    window.setTimeout(() => {
+                        syncCalcOmForm(form);
+                        calcOmAutoSetField(side);
+                        if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
+                    }, 0);
+                });
+
+            form.find('.move-selector, .move-type')
+                .off('change.qolCalcOm')
+                .on('change.qolCalcOm', () => {
+                    if (calcOmSelected() !== 'camomons') return;
+                    window.setTimeout(() => {
+                        syncCalcOmForm(form);
+                        if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
+                    }, 0);
+                });
+        }
+
+        window.$('select.qol-calc-om-source').off('change.qolCalcOm').on('change.qolCalcOm', refreshForms);
+        document.addEventListener('qol-shared-change', refreshForms);
+
+        // ---------- native DOM listeners ----------
+
+        row.addEventListener('change', (event) => {
+            const input = event.target.closest('.qol-calc-om');
+            if (!input) return;
+            if (input.checked) {
+                for (const other of row.querySelectorAll('.qol-calc-om')) {
+                    if (other !== input) other.checked = false;
                 }
-            };
-
-            // ---------- wrap the calculator's own functions ----------
-
-            window.createPokemon = function (pokeInfo, ...args) {
-                const pokemon = originalCreatePokemon.call(this, pokeInfo, ...args);
-                if (typeof pokeInfo === 'string') return pokemon;
-                const applied = window.$(pokeInfo).data('qolOmApplied');
-                return applied === calcOmSelected() ? pokemon : applyCalcOm(pokemon, pokeInfo);
-            };
-
-            window.autoUpdateStats = function (side, ...args) {
-                const pokeInfo = window.$(side);
-                pokeInfo.find('.ability option[data-qol-om="true"]').remove();
-                const result = originalAutoUpdateStats.call(this, side, ...args);
-                if (pokeInfo.length) syncCalcOmForm(pokeInfo);
-                return result;
-            };
-
-            const refreshForms = () => {
-                for (const side of ['#p1', '#p2']) window.autoUpdateStats(side);
-                if (typeof window.performCalculationsOM === 'function') window.setTimeout(window.performCalculationsOM, 0);
-            };
-            calcOmLoadPsDex(refreshForms);
-
-            // ---------- jQuery handlers (Select2 only fires jQuery events) ----------
-
-            for (const side of ['p1', 'p2']) {
-                const form = window.$(`#${side}`);
-
-                // The native handler (registered earlier) has just overwritten the
-                // form with the new Pokémon's data, so our "applied" flag is no
-                // longer true.
-                form.find('input.set-selector, select.set-selector, .forme')
-                    .off('change.qolCalcOm')
-                    .on('change.qolCalcOm', () => {
-                        form.removeData('qolOmApplied');
-                        window.setTimeout(() => {
-                            syncCalcOmForm(form);
-                            if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
-                        }, 0);
-                    });
-
-                form.find('.move-selector, .move-type')
-                    .off('change.qolCalcOm')
-                    .on('change.qolCalcOm', () => {
-                        if (calcOmSelected() !== 'camomons') return;
-                        window.setTimeout(() => {
-                            syncCalcOmForm(form);
-                            if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
-                        }, 0);
-                    });
+                for (const builtIn of group.querySelectorAll('.om-trigger:checked')) {
+                    builtIn.checked = false;
+                    window.$(builtIn).trigger('change');
+                }
             }
-
-            window.$('select.qol-calc-om-source').off('change.qolCalcOm').on('change.qolCalcOm', refreshForms);
-
-            // ---------- native DOM listeners ----------
-
-            row.addEventListener('change', (event) => {
-                const input = event.target.closest('.qol-calc-om');
-                if (!input) return;
-                if (input.checked) {
-                    for (const other of row.querySelectorAll('.qol-calc-om')) {
-                        if (other !== input) other.checked = false;
-                    }
-                    for (const builtIn of group.querySelectorAll('.om-trigger:checked')) {
-                        builtIn.checked = false;
-                        window.$(builtIn).trigger('change');
-                    }
-                }
-                updateInlineControls();
-                refreshForms();
-            });
-
-            document.addEventListener('change', (event) => {
-                if (event.target.matches('.om-trigger') && event.target.checked) {
-                    for (const input of row.querySelectorAll('.qol-calc-om')) input.checked = false;
-                    updateInlineControls();
-                    refreshForms();
-                    return;
-                }
-                if (event.target.matches('#p1 .move-selector, #p2 .move-selector, #p1 .move-type, #p2 .move-type')) {
-                    window.setTimeout(refreshForms, 0);
-                } else if (event.target.matches('#p1 .nature, #p2 .nature, #p1 .qol-calc-om-fields select, #p2 .qol-calc-om-fields select')) {
-                    refreshForms();
-                }
-            }, true);
-
             updateInlineControls();
             refreshForms();
-            console.info(LOG, 'Damage Calculator OM controls ready');
-        }, 250);
-    }
+            if (input.checked && CALC_OM_ABILITY_MODES.has(input.value)) {
+                ['p1', 'p2'].forEach(calcOmAutoSetField);
+            }
+        });
+
+        document.addEventListener('change', (event) => {
+            if (event.target.matches('.om-trigger') && event.target.checked) {
+                for (const input of row.querySelectorAll('.qol-calc-om')) input.checked = false;
+                updateInlineControls();
+                refreshForms();
+                return;
+            }
+            if (event.target.matches('#p1 .move-selector, #p2 .move-selector, #p1 .move-type, #p2 .move-type')) {
+                window.setTimeout(refreshForms, 0);
+            } else if (event.target.matches('#p1 .nature, #p2 .nature, #p1 .qol-calc-om-fields select, #p2 .qol-calc-om-fields select')) {
+                refreshForms();
+            }
+        }, true);
+
+        updateInlineControls();
+        refreshForms();
+        console.info(LOG, 'Damage Calculator OM controls ready');
+    }, 250);
+}
 
     // ---------- patch everything ----------
 
