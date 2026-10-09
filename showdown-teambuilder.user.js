@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      8.5.0
+// @version      10.0.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://calc.pokemonshowdown.com/*
@@ -4153,14 +4153,23 @@
 
         const pokemon = window.createPokemon(form); // tracked by applyCalcOm in ability modes
         const abilities = calcOmActiveAbilities(pokemon);
-
+ 
         const pick = (table) => {
             const name = abilities.find((a) => table[a]);
             const value = name && table[name];
             return typeof value === 'function' ? value() : value || '';
         };
-        const weather = pick(CALC_OM_WEATHER_ABILITIES);
-        const terrain = pick(CALC_OM_TERRAIN_ABILITIES);
+        // calcOmFieldFromAbilities uses attacker abilities before defender
+        // abilities. Preserve that same precedence in the visible controls.
+        let attackerAbilities = abilities;
+        if (side === 'p2') {
+            const attacker = window.createPokemon(window.$('#p1'));
+            attackerAbilities = calcOmActiveAbilities(attacker);
+        }
+        const attackerHasWeather = side === 'p2' && attackerAbilities.some((a) => CALC_OM_WEATHER_ABILITIES[a]);
+        const attackerHasTerrain = side === 'p2' && attackerAbilities.some((a) => CALC_OM_TERRAIN_ABILITIES[a]);
+        const weather = attackerHasWeather ? '' : pick(CALC_OM_WEATHER_ABILITIES);
+        const terrain = attackerHasTerrain ? '' : pick(CALC_OM_TERRAIN_ABILITIES);
         calcOmDebug('auto field', side, {abilities, weather, terrain});
 
         const press = (name, value) => {
@@ -4316,25 +4325,6 @@
         if (!proto) return fail('calc.Pokemon.prototype is missing');
         if (typeof proto.clone !== 'function') return fail('Pokemon.prototype.clone is missing');
         if (typeof ns.calculate !== 'function') return fail('calc.calculate is missing');
-
-        // Keep tracking (and the stat multiplier) alive across the calc's own clones.
-        if (!proto.__qolCloneWrapped) {
-            const originalClone = proto.clone;
-            proto.clone = function (...args) {
-                const clone = originalClone.apply(this, args);
-                if (this.__qolOmTracked) {
-                    calcOmTrackAbilities(clone, this.__qolOmAbilities);
-                    clone.__qolOmCleared = this.__qolOmCleared;
-                    clone.__qolOmExcluded = this.__qolOmExcluded;
-                    clone.__qolOmShared = this.__qolOmShared;
-                    clone.__qolOmQueried = this.__qolOmQueried; // shared on purpose
-                    clone.__qolOmStatMult = this.__qolOmStatMult;
-                    calcOmApplyStatMult(clone);
-                }
-                return clone;
-            };
-            proto.__qolCloneWrapped = true;
-        }
 
         const originalCalculate = ns.calculate;
         const wrapped = function (gen, attacker, defender, move, field, ...rest) {
@@ -4582,6 +4572,50 @@
 
         // Own property: shadows the prototype on this instance only.
         Object.defineProperty(pokemon, 'hasAbility', {configurable: true, writable: true, value: calcOmHasAbility});
+
+        // The calculator UI can call a private imported calculate() binding.
+        // Wrap each live instance's own clone chain so the ability pool remains
+        // attached even when window.calc.calculate is bypassed.
+        if (typeof pokemon.clone === 'function' && !pokemon.clone.__qolAbilityCloneWrapped) {
+            const originalClone = pokemon.clone;
+            const trackedClone = function (...args) {
+                const clone = originalClone.apply(this, args);
+                if (clone && this.__qolOmTracked) {
+                    calcOmTrackAbilities(clone, this.__qolOmAbilities || []);
+                    clone.__qolOmCleared = this.__qolOmCleared;
+                    clone.__qolOmExcluded = this.__qolOmExcluded;
+                    clone.__qolOmShared = this.__qolOmShared;
+                    clone.__qolOmQueried = this.__qolOmQueried;
+                    clone.__qolOmStatMult = this.__qolOmStatMult;
+                    calcOmApplyStatMult(clone);
+                }
+                return clone;
+            };
+            trackedClone.__qolAbilityCloneWrapped = true;
+            try {
+                pokemon.clone = trackedClone;
+            } catch (error) {
+                const proto = Object.getPrototypeOf(pokemon);
+                if (proto && typeof proto.clone === 'function' && !proto.clone.__qolAbilityCloneWrapped) {
+                    const originalProtoClone = proto.clone;
+                    const trackedProtoClone = function (...args) {
+                        const clone = originalProtoClone.apply(this, args);
+                        if (clone && this.__qolOmTracked) {
+                            calcOmTrackAbilities(clone, this.__qolOmAbilities || []);
+                            clone.__qolOmCleared = this.__qolOmCleared;
+                            clone.__qolOmExcluded = this.__qolOmExcluded;
+                            clone.__qolOmShared = this.__qolOmShared;
+                            clone.__qolOmQueried = this.__qolOmQueried;
+                            clone.__qolOmStatMult = this.__qolOmStatMult;
+                            calcOmApplyStatMult(clone);
+                        }
+                        return clone;
+                    };
+                    trackedProtoClone.__qolAbilityCloneWrapped = true;
+                    proto.clone = trackedProtoClone;
+                }
+            }
+        }
 
         Object.defineProperty(pokemon, 'ability', {
             configurable: true,
@@ -5087,38 +5121,55 @@
 
         // ---------- searchable Pokémon pickers ----------
 
+        let sourcePickerFillPending = false;
         const populateOmSourcePickers = () => {
+            if (sourcePickerFillPending) return;
+            sourcePickerFillPending = true;
             const species = calcOmAllSpeciesNames();
             const listKey = `${calcOmGenNumber()}|${species.length}`;
-
-            for (const source of document.querySelectorAll('select.qol-calc-om-source')) {
-                const $source = window.$(source);
-                if (source.dataset.qolListKey !== listKey) {
+            let sources = [...document.querySelectorAll('select.qol-calc-om-source')]
+                .filter((source) => source.dataset.qolListKey !== listKey);
+            let sourceIndex = 0;
+            const fillNext = (deadline) => {
+                let budget = 0;
+                while (sourceIndex < sources.length && budget < 80 &&
+                    (!deadline || deadline.timeRemaining() > 2 || budget === 0)) {
+                    const source = sources[sourceIndex];
+                    if (!source.isConnected) { sourceIndex++; continue; }
+                    const $source = window.$(source);
                     const selected = source.value;
-                    source.replaceChildren(new Option('(none)', ''));
-                    for (const name of species) source.add(new Option(name, name));
-                    source.dataset.qolListKey = listKey;
-                    if ([...source.options].some((o) => o.value === selected)) source.value = selected;
+                    if (!source.dataset.qolListKey || source.dataset.qolListKey === 'loading') {
+                        source.replaceChildren(new Option('(none)', ''));
+                    }
+                    const start = Number(source.dataset.qolNextIndex || 0);
+                    const end = Math.min(species.length, start + 80);
+                    for (let i = start; i < end; i++) source.add(new Option(species[i], species[i]));
+                    source.dataset.qolNextIndex = String(end);
+                    source.dataset.qolListKey = end >= species.length ? listKey : 'loading';
+                    if (end >= species.length) {
+                        if ([...source.options].some((option) => option.value === selected)) source.value = selected;
+                        if ($source.select2 && !$source.data('select2')) {
+                            $source.select2({dropdownAutoWidth: true, width: '170px'});
+                        }
+                        if ($source.data('select2')) $source.select2('val', source.value);
+                        delete source.dataset.qolNextIndex;
+                        sourceIndex++;
+                    }
+                    budget++;
                 }
-                if ($source.select2 && !$source.data('select2')) {
-                    $source.select2({dropdownAutoWidth: true, width: '170px'});
+                if (sourceIndex < sources.length) {
+                    (window.requestIdleCallback || ((callback) => window.setTimeout(() => callback(null), 0)))(fillNext);
+                } else {
+                    sourcePickerFillPending = false;
                 }
-                if ($source.data('select2')) $source.select2('val', source.value);
+            };
+            if (!species.length) {
+                sourcePickerFillPending = false;
+                return 0;
             }
+            (window.requestIdleCallback || ((callback) => window.setTimeout(() => callback(null), 0)))(fillNext);
             return species.length;
         };
-
-        populateOmSourcePickers();
-        calcOmFillAbilityDatalist();
-
-        // The calculator loads its dex asynchronously; keep retrying until populated.
-        let dexLoadAttempts = 0;
-        const dexLoadTimer = window.setInterval(() => {
-            dexLoadAttempts++;
-            const speciesCount = populateOmSourcePickers();
-            const abilityCount = calcOmFillAbilityDatalist();
-            if ((speciesCount && abilityCount) || dexLoadAttempts >= 120) window.clearInterval(dexLoadTimer);
-        }, 500);
 
         // ---------- show/hide the per-mode fields ----------
 
@@ -5149,6 +5200,10 @@
             for (const sharedGroup of document.querySelectorAll('.qol-om-shared-group')) {
                 sharedGroup.style.display = sharedMode ? '' : 'none';
             }
+            // These large searchable lists are hidden in normal use. Build them
+            // only when the user opens an OM that needs a donor or God picker.
+            if (config) populateOmSourcePickers();
+            if (sharedMode) calcOmFillAbilityDatalist();
             updateStatus();
         };
 
@@ -5172,6 +5227,9 @@
         const refreshForms = () => {
             const callsBefore = calcOmSupport.calls;
             for (const side of ['#p1', '#p2']) window.autoUpdateStats(side);
+            // This also runs on initial calculator setup. Prepare the visible
+            // middle weather/terrain controls before the next damage pass.
+            if (calcOmAbilityMode()) ['p1', 'p2'].forEach(calcOmAutoSetField);
             if (typeof window.performCalculationsOM === 'function') window.setTimeout(window.performCalculationsOM, 0);
 
             // Detects "wrapper installed but the page never calls it".
@@ -5201,6 +5259,16 @@
                         if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
                     }, 0);
                 });
+
+            // Changing the selected ability is also a switch-in state change
+            // for entry abilities, even when species and set stay the same.
+            form.find('.ability').off('change.qolCalcOmWeather').on('change.qolCalcOmWeather', () => {
+                if (!calcOmAbilityMode()) return;
+                window.setTimeout(() => {
+                    calcOmAutoSetField(side);
+                    if (typeof window.performCalculationsOM === 'function') window.performCalculationsOM();
+                }, 0);
+            });
 
             form.find('.move-selector, .move-type')
                 .off('change.qolCalcOm')
