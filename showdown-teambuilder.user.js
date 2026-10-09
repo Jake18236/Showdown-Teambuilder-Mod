@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      10.0.0
+// @version      10.1.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://calc.pokemonshowdown.com/*
@@ -5138,10 +5138,10 @@
                     if (!source.isConnected) { sourceIndex++; continue; }
                     const $source = window.$(source);
                     const selected = source.value;
-                    if (!source.dataset.qolListKey || source.dataset.qolListKey === 'loading') {
+                    const start = Number(source.dataset.qolNextIndex || 0);
+                    if (start === 0) {
                         source.replaceChildren(new Option('(none)', ''));
                     }
-                    const start = Number(source.dataset.qolNextIndex || 0);
                     const end = Math.min(species.length, start + 80);
                     for (let i = start; i < end; i++) source.add(new Option(species[i], species[i]));
                     source.dataset.qolNextIndex = String(end);
@@ -5418,7 +5418,7 @@
         parseGodlyGiftRestricted,
         isTierShiftFormat: (room) => getActiveMod(room) === MOD.TIER_SHIFT,
         isMixAndMegaFormat: (room) => getActiveMod(room) === MOD.MIX_AND_MEGA,
-        isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED,
+        isBadNBoostedFormat: (room) => getActiveMod(room) === MOD.BAD_N_BOOSTED, 
         isScalemonsFormat: (room) => getActiveMod(room) === MOD.SCALEMONS,
         isGodlyGiftFormat,
         isTierShiftAAAFormat,
