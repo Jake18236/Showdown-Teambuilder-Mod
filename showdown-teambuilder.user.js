@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      10.1.0
+// @version      10.4.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://calc.pokemonshowdown.com/*
@@ -444,6 +444,7 @@
         const bans = {
             species: new Set(), baseSpecies: new Set(), tiers: new Set(),
             unbanned: new Set(), unbannedBase: new Set(), abilities: new Set(),
+            restricted: new Set(),
         };
         let sawNonSpeciesBan = false;
 
@@ -480,10 +481,15 @@
             if (isBaseForme(sp)) bans.unbannedBase.add(sp.id);
         }
 
+        for (const token of sections.Restricted || []) {
+            const sp = Dex.species.get(token);
+            if (sp?.exists) bans.restricted.add(sp.id);
+        }
+
         return bans;
     }
 
-    function isBannedByList(bans, sp) {
+    function isBannedByList(bans, sp, ignoreTiers = false) {
         if (!bans || !sp?.exists) return false;
 
         const baseId = toID(sp.baseSpecies || sp.name);
@@ -491,7 +497,7 @@
 
         return bans.species.has(sp.id) ||
             bans.baseSpecies.has(baseId) ||
-            (!!sp.tier && bans.tiers.has(toID(sp.tier)));
+            (!ignoreTiers && !!sp.tier && bans.tiers.has(toID(sp.tier)));
     }
 
     function parseTSABanlist(html) {
@@ -572,6 +578,7 @@
         const titleId = stripGen(fmtId(title));
 
         let formatId = genericBanlists.has(titleId) ? titleId : null;
+        let usedFallback = false;
 
         // Title didn't match the id we asked for: if exactly one request is
         // still waiting (sent within the last 15s), assume this is its reply.
@@ -581,6 +588,7 @@
             );
             if (waiting.length === 1 && /Bans\s*<\/b>\s*-/.test(html)) {
                 formatId = waiting[0][0];
+                usedFallback = true;
                 console.log(LOG, `Banlist title "${title}" did not match "${formatId}"; assuming it is the reply.`);
             }
         }
@@ -590,7 +598,9 @@
         const sections = parseFormatSectionTokens(html, null);
         if (!sections) return null;
 
-        entry.bans = parseBanSections(sections);
+        entry.bans = usedFallback && /natdex|nationaldex/.test(formatId)
+            ? parseBanSections({})
+        : parseBanSections(sections);
         entry.loaded = true;
         console.log(LOG, `Loaded bans for ${title}`);
 
@@ -610,6 +620,15 @@
             if (id && bans.abilities.has(id)) return name;
         }
         return null;
+    }
+
+    function isRestrictedInFormat(search, species) {
+        const id = genericBanFormatId(search.format);
+        if (!id) return false;
+        const entry = requestGenericBanlist(id);
+        const restricted = entry.loaded ? entry.bans?.restricted : null;
+        if (!restricted?.size) return false;
+        return restricted.has(species.id) || restricted.has(toID(species.baseSpecies || species.name));
     }
 
     // ---------- server message receiver ----------
@@ -1956,7 +1975,7 @@
     const ALLOWED_POKEMON_FILTER_TYPES = [
         'type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
         'natdex', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'hazards', 'into', 'from',
-        'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution',
+        'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution', 'restricted'
     ];
     // Toggle filters take no argument: typing the keyword and picking the
     // single suggestion adds/removes the chip. Value = display label.
@@ -1974,6 +1993,7 @@
         eeveelution: 'Eeveelution',
         removal: 'Removal',
         hazards: 'Hazards',
+        restricted: 'Restricted',
     };
 
 
@@ -2033,6 +2053,72 @@
     // Per-dex cache so we don't rescan the whole movedex per search row.
     const customToggleMoveIdCache = new WeakMap();
 
+    const STONE_PREFIX = 'Stone ';
+    const isStoneRowId = (id) => String(id).toLowerCase().startsWith(STONE_PREFIX.toLowerCase());
+    const isMnmFormat = (f) => fmtHas(f, 'mixandmega');
+
+    function requiresHeldItem(sp) {
+        return !!sp && !!(
+            sp.isMega || sp.isPrimal || sp.requiredItem ||
+            (sp.requiredItems && sp.requiredItems.length) || sp.battleOnly
+        );
+    }
+
+    function isMnmStoneItem(dex, item) {
+        if (!item?.exists) return false;
+        const forme = resolveMegaForme(dex, item);
+        if (!forme) return false;
+        if (item.megaStone || resolveSpecialMixAndMegaForme(dex, item)) return true;
+        return forme.formeSpecies.name !== forme.baseSpecies.name; // Rusted Sword etc.; skips Soul Dew
+    }
+
+    const mnmStoneCache = new WeakMap();
+    function getMnmStoneItems(dex) {
+        let list = mnmStoneCache.get(dex);
+        if (list) return list;
+
+        list = [];
+        for (const id of Object.keys(window.BattleItems || {})) {
+            const item = dex.items.get(id);
+            if (item?.exists && item.id === id && isMnmStoneItem(dex, item)) list.push(item);
+        }
+        list.sort((a, b) => a.name.localeCompare(b.name));
+        mnmStoneCache.set(dex, list);
+        return list;
+    }
+
+    function stoneSuggestions(engine, query) {
+        if (!isMnmFormat(engine?.typedSearch?.format)) return [];
+        const q = toSearchId(query);
+        if (q.length < 2) return [];
+
+        const dex = engine.dex || engine.typedSearch?.dex;
+        if (!dex) return [];
+
+        return getMnmStoneItems(dex)
+            .filter((it) => toSearchId(it.name).includes(q))
+            .sort((a, b) =>
+                  toSearchId(b.name).startsWith(q) - toSearchId(a.name).startsWith(q))
+            .slice(0, 8)
+            .map((it) => ['ability', STONE_PREFIX + it.id, 0, Math.min(q.length, it.name.length)]);
+    }
+
+    // Stats / types / ability of `speciesLike` holding the stone (null if n/a).
+    function mnmStoneView(dex, speciesLike, stoneId) {
+        if (!dex || !speciesLike?.name) return null;
+        const set = {species: speciesLike.name, item: stoneId};
+
+        const baseStats = mixAndMegaBaseStats(dex, set);
+        if (!baseStats) return null;
+
+        const ability = mixAndMegaFutureAbility(dex, set);
+        return {
+            baseStats,
+            types: mixAndMegaModifiedTypes(dex, set) || speciesLike.types,
+            abilities: ability ? {0: ability} : null,
+        };
+    }
+
     function computeCustomToggleMoveIds(dex, kind) {
         if (TOGGLE_MOVE_LISTS[kind]) {
             return TOGGLE_MOVE_LISTS[kind].filter((id) => dex.moves.get(id)?.exists);
@@ -2067,21 +2153,43 @@
 
     // `ctx` is the search instance, `original` native filter() so move-based
     // toggles reuse native 'move' filtering per qualifying move id.
+    const toggleMoveMatchCache = new WeakMap(); // search instance -> {format, map}
+
+    // True if the species can learn at least one move from the toggle's move list.
+    function canLearnAnyToggleMove(ctx, original, row, species, kind) {
+        const format = String(ctx.format || '');
+        let cache = toggleMoveMatchCache.get(ctx);
+        if (!cache || cache.format !== format) {
+            cache = {format, map: new Map()};
+            toggleMoveMatchCache.set(ctx, cache);
+        }
+
+        const key = kind + '|' + species.id;
+        if (cache.map.has(key)) return cache.map.get(key);
+
+        const result = getCustomToggleMoveIds(ctx.dex, kind)
+        .some((moveId) => pokemonMatchesMove(ctx, original, row, species, moveId));
+        cache.map.set(key, result);
+        return result;
+    }
+
     function pokemonMatchesCustomToggle(ctx, original, row, species, kind) {
         switch (kind) {
-            case 'recovery':
-            case 'pivot':
-            case 'priority':
-            case 'removal':
-            case 'hazards':
             case 'fe':
                 return isFullyEvolved(species);
+            case 'restricted': return isRestrictedInFormat(ctx, species);
             case 'legendary':
             case 'boxlegend':
             case 'mythical':
             case 'paradox':
             case 'eeveelution':
                 return speciesInGroup(species, kind);
+            case 'recovery':
+            case 'pivot':
+            case 'priority':
+            case 'removal':
+            case 'hazards':
+                return canLearnAnyToggleMove(ctx, original, row, species, kind);
             default:
                 return true;
         }
@@ -2225,16 +2333,28 @@
             const species = this.dex.species.get(row[1]);
             if (!species?.exists) return false;
 
-            // Each filter is tested on its own; a negated one flips the
-            // result. Everything must hold at once.
+            // Stone chip: judge every other filter on the stone-modified mon.
+            const stoneId = filters.find((f) => f[0] === 'stone')?.[1];
+            const view = stoneId ? mnmStoneView(this.dex, species, stoneId) : null;
+            const judged = view
+            ? Object.assign({}, species, {types: view.types, abilities: view.abilities || species.abilities})
+            : species;
+
             for (const [rawType, target] of filters) {
                 const negated = isNegatedFilterType(rawType);
                 const type = baseFilterType(rawType);
 
-                // natdex only widens the pool; it never rejects a row.
-                if (type === 'natdex') continue;
+                // natdex only widens the pool; stone only changes how rows are judged/shown.
+                if (type === 'natdex' || type === 'stone') continue;
 
-                const matches = pokemonFilterMatches(this, original, row, species, type, target);
+                let matches;
+                if (view && type === 'type') {
+                    matches = judged.types.includes(target);
+                } else if (view && view.abilities && type === 'ability') {
+                    matches = Object.values(view.abilities).some((a) => toID(a) === toID(target));
+                } else {
+                    matches = pokemonFilterMatches(this, original, row, judged, type, target);
+                }
                 if (negated ? matches : !matches) return false;
             }
 
@@ -2295,6 +2415,12 @@
             );
         }
 
+        const natdexFormat = fmtHas(search.format, 'natdex', 'nationaldex');
+        let out = results.filter(
+            (row) => row[0] !== 'pokemon' ||
+            !isBannedByList(bans, search.dex.species.get(row[1]), natdexFormat)
+        );
+
         return moveBannedToIllegal(
             search, results,
             (sp) => isBannedByList(bans, sp),
@@ -2337,6 +2463,7 @@
             };
             this.__qolIntoId = findChip('into');
             this.__qolFromId = findChip('from');
+            this.__qolStoneId = findChip('stone');
 
             // "natdex" chip: use the complete Pokédex as the legal pool
             // (includes mons the format normally considers illegal).
@@ -2358,11 +2485,43 @@
 
             let results = original.call(this, filters, sortCol, reverseSort);
             if (!Array.isArray(results)) return results;
+            if (isMnmFormat(this.format)) {
+                results = dropEmptyHeaders(results.filter(
+                    (r) => r[0] !== 'pokemon' || !requiresHeldItem(this.dex.species.get(r[1]))
+                ));
+            }
 
             results = applyGenericBans(this, results, hasNatdex);
             return applyGodlyGiftLegality(this, results);
         }
                           );
+    }
+
+    const STONE_SORT = {lead: 150, ability: 118}; // px: icon+name columns, ability column (match the rows)
+
+    function renderItemSortRow(ui) {
+        const sortCol = ui.engine?.sortCol;
+        const stat = (key, text) =>
+        `<button class="sortcol statsortcol${sortCol === key ? ' cur' : ''}" data-qol-sort="${key}">${text}</button>`;
+
+        return '<li class="result"><div class="sortrow">' +
+            stat('hp', 'HP') + stat('atk', 'Atk') + stat('def', 'Def') +
+            stat('spa', 'SpA') + stat('spd', 'SpD') + stat('spe', 'Spe') + stat('bst', 'BST') +
+            '</div></li>';
+    }
+
+    // Puts the sort row above the item results (after sorting, so it never gets sorted away).
+    function patchItemSearchSortRow() {
+        patchMethod(window.BattleItemSearch?.prototype, 'getResults', '__qolItemSortRowPatched', (original) =>
+                    function (...args) {
+            const results = original.apply(this, args);
+            if (!Array.isArray(results) || !isMnmFormat(this.format)) return results;
+            if (!(this.set?.species || getActiveTeambuilderRoom()?.curSet?.species)) return results;
+            if (results.some((r) => r[0] === 'html' && String(r[1]).includes('qol-itemsortrow'))) return results;
+            return [['html', ITEM_SORT_ROW_HTML], ...results];
+        }
+                   );
+        return true;
     }
 
     // ====================================================================
@@ -3074,6 +3233,14 @@
                 // default (Enter) selection.
                 const native = (original.call(engine, query) || []).filter((row) => !isReservedToggleCollisionRow(row));
                 const custom = customToggleSuggestions(raw);
+                const stones = stoneSuggestions(engine, raw);
+
+                if (!custom.length && !stones.length) return native;
+
+                const head = [];
+                if (custom.length) head.push(['header', 'Mod Filters'], ...custom);
+                if (stones.length) head.push(['header', 'Mega Stones'], ...stones);
+                return (engine.results = head.concat(native));
 
                 if (!custom.length) return native;
                 return (engine.results = [['header', 'Mod Filters'], ...custom].concat(native));
@@ -3151,6 +3318,16 @@
             }
         }
 
+        // Mega stone suggestion picked (one stone chip at a time).
+        if (isStr && isStoneRowId(rawValue)) {
+            const item = engine.dex.items.get(rawValue.slice(STONE_PREFIX.length));
+            console.log(LOG, 'stone pick:', rawValue, '->', item?.exists ? item.id : 'item not found');
+            if (item?.exists) {
+                engine.filters = (engine.filters || []).filter((f) => f[0] !== 'stone');
+                return pushPokemonFilter(engine, 'stone', item.id, false); // skips the allow-list
+            }
+        }
+
         // Toggle suggestion picked (natdex/fe/recovery/...).
         if (isStr && rawValue.startsWith(CUSTOM_TOGGLE_PREFIX)) {
             const key = rawValue.slice(CUSTOM_TOGGLE_PREFIX.length);
@@ -3194,6 +3371,11 @@
             if (sp?.exists) return sp.name + ' into';
         }
 
+        if (isStoneRowId(id)) {
+            const item = engine.dex.items.get(id.slice(STONE_PREFIX.length));
+            if (item?.exists) return item.name;
+        }
+
         if (id.startsWith(CUSTOM_TOGGLE_PREFIX)) {
             const label = CUSTOM_TOGGLE_FILTERS[id.slice(CUSTOM_TOGGLE_PREFIX.length)];
             if (label) return engine.__qolNegateMode ? `Not ${label}` : label;
@@ -3222,10 +3404,196 @@
         move: {find: moveFind, textSearch: moveTextSearch, addFilter: moveAddFilter, getResultName: moveResultName},
     };
 
+    // Sorting for the item search (native item sort() throws on unknown columns).
+        const ITEM_SORT_KEYS = new Set([...STATS, 'bst', 'qoltype', 'qolability']);
+
+    function patchItemSearchSort() {
+        patchMethod(window.BattleItemSearch?.prototype, 'sort', '__qolItemSortPatched', (original) =>
+            function (results, sortCol, reverseSort) {
+                if (!ITEM_SORT_KEYS.has(sortCol)) return original.call(this, results, sortCol, reverseSort);
+
+                const species = this.set?.species || getActiveTeambuilderRoom()?.curSet?.species;
+                if (!isMnmFormat(this.format) || !species) return results;
+
+                const base = this.dex.species.get(species);
+                const stoneRows = [];
+                const otherRows = [];
+                for (const row of results) {
+                    if (row[0] !== 'item') continue;
+                    const item = this.dex.items.get(row[1]);
+                    const tmp = {species, item: item.id};
+                    const stats = isMnmStoneItem(this.dex, item) ? mixAndMegaBaseStats(this.dex, tmp) : null;
+                    if (!stats) { otherRows.push({row}); continue; }
+                    stoneRows.push({
+                        row, stats,
+                        types: (mixAndMegaModifiedTypes(this.dex, tmp) || base?.types || []).join('/'),
+                        ability: mixAndMegaFutureAbility(this.dex, tmp) || '',
+                    });
+                }
+
+                const order = reverseSort ? -1 : 1;
+                const byName = (a, b) => String(a.row[1]).localeCompare(String(b.row[1]));
+
+                stoneRows.sort((a, b) => {
+                    if (sortCol === 'qolability') {
+                        // Stones that don't grant an ability always go last.
+                        if (!a.ability !== !b.ability) return a.ability ? -1 : 1;
+                        return a.ability.localeCompare(b.ability) * order || byName(a, b);
+                    }
+                    if (sortCol === 'qoltype') return a.types.localeCompare(b.types) * order || byName(a, b);
+
+                    const value = (e) => (sortCol === 'bst' ? sumStats(e.stats) : e.stats[sortCol]);
+                    return (value(b) - value(a)) * order || byName(a, b);
+                });
+
+                return stoneRows.concat(otherRows).map((e) => e.row);
+            }
+        );
+        return true;
+    }
+
+    function decorateItemSortRow() {
+        const engine = getTeambuilderRoom()?.search?.engine;
+        if (engine?.typedSearch?.searchType !== 'item') return;
+
+        const bar = document.querySelector('.qol-itemsortrow');
+        if (!bar) return;
+
+        // Keep the bar above everything else in the results list (including the selected item).
+        const holder = bar.closest('li') || bar;
+        const list = holder.parentElement;
+        if (list && list.firstElementChild !== holder) list.insertBefore(holder, list.firstElementChild);
+
+        const active = engine.sortCol || '';
+        const buttons = [...bar.querySelectorAll('button[data-sort]')];
+        for (const btn of buttons) btn.classList.toggle('cur', btn.dataset.sort === active);
+
+        const row = document.querySelector('li.result a[data-entry^="item|"] .statcol')?.closest('a');
+        if (!row) return;
+
+                const targets = [
+            row.querySelector('.typecol'),
+            row.querySelector('.abilitycol'),
+            ...row.querySelectorAll('.statcol'),
+            row.querySelector('.bstcol'),
+        ];
+        const barLeft = bar.getBoundingClientRect().left;
+
+        bar.style.position = 'relative';
+        bar.style.height = '20px';
+        buttons.forEach((btn, i) => {
+            const col = targets[i];
+            if (!col) return;
+            const rect = col.getBoundingClientRect();
+            btn.style.position = 'absolute';
+            btn.style.top = '0';
+            btn.style.left = (rect.left - barLeft) + 'px';
+            btn.style.width = rect.width + 'px';
+        });
+    }
+
+    let stoneSortListenerInstalled = false;
+
+    function installStoneSortListener() {
+        if (stoneSortListenerInstalled) return;
+        stoneSortListenerInstalled = true;
+
+        const itemSortButton = (e) => e.target?.closest?.('[data-qol-sort]');
+
+        document.addEventListener('mousedown', (e) => {
+            const btn = itemSortButton(e);
+            if (!btn || e.button !== 0) return;
+
+            const room = getTeambuilderRoom();
+            const engine = room?.search?.engine;
+            if (!engine || engine.typedSearch?.searchType !== 'item') return;
+
+            e.preventDefault();            // keep focus in the search box
+            e.stopImmediatePropagation();
+
+            const col = btn.dataset.qolSort;
+            if (!col) {
+                engine.sortCol = null;
+                engine.reverseSort = false;
+            } else if (engine.sortCol !== col) {
+                engine.sortCol = col;
+                engine.reverseSort = false;
+            } else if (!engine.reverseSort) {
+                engine.reverseSort = true;
+            } else {
+                engine.sortCol = null;
+                engine.reverseSort = false;
+            }
+            console.log(LOG, 'item sort:', engine.sortCol, engine.reverseSort ? 'low-high' : 'high-low');
+
+            engine.results = null;
+            try { room.search.find?.(''); } catch (err) { console.warn(LOG, 'search.find failed:', err); }
+            refreshSearchUi(room);
+        }, true);
+
+        // The press already did the work; don't let the click reach the client too.
+        document.addEventListener('click', (e) => {
+            if (!itemSortButton(e)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }, true);
+    }
+
+    const ITEM_SORT_ROW_HTML =
+          '<div class="sortrow qol-itemsortrow">' +
+          [['qoltype', 'Types'], ['qolability', 'Abilities'],
+           ['hp', 'HP'], ['atk', 'Atk'], ['def', 'Def'], ['spa', 'SpA'], ['spd', 'SpD'], ['spe', 'Spe'], ['bst', 'BST']]
+    .map(([key, text]) => {
+        const centered = key === 'qoltype' || key === 'qolability'
+        ? ' style="text-align:center;padding-left:0;padding-right:0"' : '';
+        return `<button class="sortcol statsortcol" data-sort="${key}"${centered}>${text}</button>`;
+    })
+    .join('') +
+        '</div>';
+
+    function patchItemSearchStoneHeader() {
+        patchMethod(window.BattleItemSearch?.prototype, 'getBaseResults', '__qolStoneHeaderPatched', (original) =>
+                    function () {
+            const results = original.call(this);
+            try {
+                if (!isMnmFormat(this.format)) return results;
+
+                const stones = getMnmStoneItems(this.dex);
+                if (!stones.length) return results;
+
+                const ids = new Set(stones.map((s) => s.id));
+                const rest = dropEmptyHeaders(
+                    results.filter((r) => !(r[0] === 'item' && ids.has(r[1])))
+                );
+                return [['header', 'Mix and Mega Items'], ...stones.map((s) => ['item', s.id]), ...rest];
+            } catch (e) {
+                console.error(LOG, 'Stone header failed:', e);
+                return results;
+            }
+        }
+                   );
+        return true; // best-effort: never block patchLoop
+    }
+
     // Picking a type from the "Weak / Resists / Neutral" list adds the chip directly.
     function patchEngineSelectResult() {
         return patchEngineMethod('selectResult', '__qolSelectResultPatched', (original) =>
                                  function (index) {
+            // Mega stone row picked (Mix and Mega "stone" chip)
+            if (this.typedSearch?.searchType === 'pokemon' && this.results) {
+                const picked = this.results[index === undefined ? this.selection : index];
+                if (picked?.[0] === 'ability' && isStoneRowId(picked[1])) {
+                    const item = this.dex.items.get(String(picked[1]).slice(STONE_PREFIX.length));
+                    if (item?.exists) {
+                        this.filters = (this.filters || []).filter((f) => f[0] !== 'stone');
+                        if (pushPokemonFilter(this, 'stone', item.id, false)) {
+                            this.selection = 0;
+                            return null;
+                        }
+                        console.warn(LOG, 'stone filter rejected; is "stone" in ALLOWED_POKEMON_FILTER_TYPES?');
+                    }
+                }
+            }
             const mode = this.__qolEffectivenessMode;
 
             if (mode && this.results) {
@@ -3247,6 +3615,7 @@
     function patchEngineSetType() {
         return patchEngineMethod('setType', '__qolSetTypePatched', (original) =>
                                  function (...args) {
+            if (this.typedSearch?.searchType === 'item') { this.sortCol = null; this.reverseSort = false; }
             resetPokemonModes(this);
             this.query = '';
             this.exactMatch = false;
@@ -3361,6 +3730,12 @@
                 return sortBy((id) =>
                               crossEvolveView(dex, base, id)?.baseStats || dex.species.get(id).baseStats);
             }
+            if (this.__qolStoneId) {
+                return sortBy((id) => {
+                    const sp = dex.species.get(id);
+                    return mixAndMegaBaseStats(dex, {species: sp.name, item: this.__qolStoneId}) || sp.baseStats;
+                });
+            }
 
             const mod = getActiveMod();
             if (!hasSearchListStats(mod)) return original.call(this, results, sortCol, reverseSort);
@@ -3383,6 +3758,8 @@
 
                 let view = intoId ? crossEvolveView(dex, pokemon, intoId) : null;
                 if (!view && fromId) view = crossEvolveView(dex, dex.species.get(fromId), pokemon.id);
+                const stoneId = getIntoFilterId(this.engine, 'stone');
+                if (!view && stoneId) view = mnmStoneView(dex, pokemon, stoneId);
 
                 if (view) {
                     return call(Object.assign({}, pokemon, {
@@ -3414,6 +3791,7 @@
     function patchSearchRowText() {
         return patchMethod(window.BattleSearch?.prototype, 'renderRow', '__qolEffectivenessTypeNamePatched', (original) =>
                            function (row, type, matchStart, matchEnd, errorMessage, attrs) {
+            if (type === 'sortitem') return renderItemSortRow(this);
             const renderLabelRow = (text) =>
             original.call(this, ['ability', 'noability'], 'ability', matchStart, matchEnd, errorMessage, attrs)
             .replace(/(<span class="col namecol"><b>)([^<]*)(<\/b>)/, `$1${text}$3`);
@@ -3429,6 +3807,11 @@
             if (id.startsWith(FROM_PREFIX)) {
                 const sp = dex?.species?.get(id.slice(FROM_PREFIX.length));
                 if (sp?.exists) return renderLabelRow(`${sp.name} into`);
+            }
+
+            if (isStoneRowId(id)) {
+                const item = dex?.items?.get(id.slice(STONE_PREFIX.length));
+                if (item?.exists) return renderLabelRow(item.name);
             }
 
             if (id.startsWith(CUSTOM_TOGGLE_PREFIX)) {
@@ -3482,6 +3865,8 @@
                     text = EFFECT_LABELS[kind] + ' ' + text.charAt(0).toUpperCase() + text.slice(1);
                 } else if (kind === 'from') {
                     text = Dex.species.get(text).name + ' Into';
+                }else if (kind === 'stone') {
+                    text = Dex.items.get(text).name;
                 } else if (kind === 'into') {
                     text = 'Into ' + Dex.species.get(text).name;
                 } else if (kind === 'move') {
@@ -3629,9 +4014,81 @@
             if (mod === MOD.CAMOMONS || (mod === MOD.MIX_AND_MEGA && chartName === 'item')) {
                 refreshTypeIcons(this);
             }
+            if (mod === MOD.MIX_AND_MEGA && chartName === 'pokemon' && this.curSet) {
+                const stoneId = getIntoFilterId(this.search?.engine, 'stone');
+                const stone = stoneId && this.curTeam?.dex?.items?.get(stoneId);
+                if (stone?.exists) {
+                    this.curSet.item = stone.name;
+                    this.$('input[name=item]').val(stone.name);
+                    this.save?.();
+                    refreshTypeIcons(this);
+                    this.updateStatForm();
+                    this.updateStatGraph();
+                }
+            }
             return result;
         }
                           );
+    }
+    const STONE_COL = {
+        types: 68,      // two 32px type icons
+        stat: 26,       // each of the 6 stat columns
+        ability: 104,   // ability column
+        gap: 4,
+        rowHeight: 30,  // match the native row height
+        nudgeY: -2,     // negative = move up; adjust if text still sits low/high
+        font: 12,
+    };
+
+    function patchItemRowStoneStats() {
+        patchMethod(window.BattleSearch?.prototype, 'renderItemRow', '__qolStoneItemRowPatched', (original) =>
+                    function (item, ...rest) {
+            const html = original.call(this, item, ...rest);
+            try {
+                const typed = this.engine?.typedSearch;
+                if (!isMnmFormat(typed?.format)) return html;
+
+                const dex = this.engine.dex || typed.dex;
+                const set = typed.set || getActiveTeambuilderRoom()?.curSet;
+                if (!dex || !set?.species || !isMnmStoneItem(dex, item)) return html;
+
+                const base = dex.species.get(set.species);
+                const tmp = {species: set.species, item: item.id};
+                const stats = mixAndMegaBaseStats(dex, tmp);
+                if (!base?.exists || !stats) return html;
+
+                const ability = mixAndMegaFutureAbility(dex, tmp);
+                const types = mixAndMegaModifiedTypes(dex, tmp) || base.types;
+                const {sortCol, reverseSort} = this.engine;
+
+                // Clickable column label (see the click handler in section 2).
+                const label = (key, text) => `<em>${text}</em>`;
+                const num = (key) => {
+                    const d = stats[key] - base.baseStats[key];
+                    if (!d) return String(stats[key]);
+                    return `<span style="font-weight:bold;color:${d > 0 ? '#2a7' : '#c33'}">${stats[key]}</span>`;
+                };
+
+                const names = {hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe'};
+                const statCols = STATS.map((k) =>
+                                           `<span class="col statcol">${label(k, names[k])}<br>${num(k)}</span>`).join('');
+                const bstCol = `<span class="col bstcol">${label('bst', 'BST')}<br>${sumStats(stats)}</span>`;
+
+                const content =
+                      `<span class="col typecol">${typeIconsHtml(types)}</span>` +
+                      '<span style="float:left;min-height:26px">' +
+                      '<span class="col abilitycol" style="width:118px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+                      (ability ? BattleLog.escapeHTML(ability) : '') + '</span></span>' +
+                      `<span style="float:left;min-height:26px">${statCols}${bstCol}</span>`;
+
+                return html.replace(/<span class="col itemdesccol">[\s\S]*?<\/span>/, () => content);
+            } catch (e) {
+                console.error(LOG, 'Stone item row failed:', e);
+                return html;
+            }
+        }
+                   );
+        return true;
     }
 
     // ====================================================================
@@ -3936,6 +4393,10 @@
             const sp = dex?.species?.get(id.slice(FROM_PREFIX.length));
             return sp?.exists ? `${sp.name} Into` : null;
         }
+        if (isStoneRowId(id)) {
+            const item = dex?.items?.get(id.slice(STONE_PREFIX.length));
+            return item?.exists ? item.name : null;
+        }
         return null;
     }
 
@@ -3985,6 +4446,7 @@
         ['move filter rows', decorateMoveFilterRows],
         ['pokemon filter rows', decoratePokemonFilterRows],
         ['move prio header', decorateMovePrioHeader],
+        ['item sort row', decorateItemSortRow],
     ];
 
     let domDecoratorsInstalled = false;
@@ -5589,7 +6051,10 @@
             patchPokemonFilter(),
             patchMoveSearchFilters(),
             patchSearchCacheInvalidation(),
-
+            patchItemRowStoneStats(),
+            patchItemSearchStoneHeader(),
+            patchItemSearchSort(),
+            patchItemSearchSortRow(),
 
             // search: ability + move pools per format
             patchAbilitySearchResults(),
@@ -5693,6 +6158,7 @@
 
     patchLoop();
     installNatureSwapCamomonsListener();
+    installStoneSortListener();
     installFusionNicknameListener();
     installDomDecorators();
     installCoverageSeparatorFix();
