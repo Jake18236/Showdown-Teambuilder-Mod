@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      10.4.0
+// @version      10.6.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://calc.pokemonshowdown.com/*
@@ -582,13 +582,15 @@
 
         // Title didn't match the id we asked for: if exactly one request is
         // still waiting (sent within the last 15s), assume this is its reply.
+        // in handleGenericBanlistRaw, replace the fallback block:
         if (!formatId) {
             const waiting = [...genericBanlists.entries()].filter(
-                ([, e]) => !e.loaded && e.silent && Date.now() - e.sentAt < 15000
+                ([id, e]) => !e.loaded && e.silent && Date.now() - e.sentAt < 15000
+                // a natdex request must get a natdex reply, never the base format's
+                && (!id.includes('nationaldex') || titleId.includes('nationaldex'))
             );
             if (waiting.length === 1 && /Bans\s*<\/b>\s*-/.test(html)) {
                 formatId = waiting[0][0];
-                usedFallback = true;
                 console.log(LOG, `Banlist title "${title}" did not match "${formatId}"; assuming it is the reply.`);
             }
         }
@@ -2881,6 +2883,7 @@
             desc: 'Hits multiple targets',
             test: isSpreadMove,
         },
+        thaws: flagToggle('defrost', 'Thaws', 'Thaws the user when used (Flame Wheel, Scald...)', ['thaw', 'thawing', 'defrost', 'unfreeze']),
     };
 
     const MOVE_TOGGLES = Object.assign({}, CORE_MOVE_TOGGLES, buildStatToggles(), UTILITY_MOVE_TOGGLES);
