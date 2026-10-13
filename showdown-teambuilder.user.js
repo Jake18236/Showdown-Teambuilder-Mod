@@ -72,6 +72,16 @@
     const stripGen = (id) => String(id || '').replace(/^gen\d+/, '');
 
     // Order matters: first match wins.
+    
+    const isNationalDexFormat = (format) =>
+    fmtHas(format, 'nationaldex', 'natdex');
+
+const isNationalDexMixAndMegaFormat = (format) =>
+    isNationalDexFormat(format) && fmtHas(format, 'mixandmega');
+
+const isStandardMixAndMegaFormat = (format) =>
+    fmtHas(format, 'mixandmega') && !isNationalDexFormat(format);
+    
     const FORMAT_MOD_KEYWORDS = [
         ['tiershift', MOD.TIER_SHIFT],      // also covers tiershiftaaa
         ['mixandmega', MOD.MIX_AND_MEGA],   // covers gen9nationaldexmixandmega
@@ -439,55 +449,75 @@
 
     const isBaseForme = (sp) => sp.name === (sp.baseSpecies || sp.name);
 
-    // Shared by Convergence and the generic per-format banlists.
-    function parseBanSections(sections) {
-        const bans = {
-            species: new Set(), baseSpecies: new Set(), tiers: new Set(),
-            unbanned: new Set(), unbannedBase: new Set(), abilities: new Set(),
-            restricted: new Set(),
-        };
-        let sawNonSpeciesBan = false;
+// "Urshifu" bans every forme; "Urshifu-Base" / "Urshifu-Single-Strike" only
+// resolve to Urshifu via aliasing, so they ban that one forme.
+const bansWholeSpecies = (token, sp) =>
+    toID(token) === toID(sp.baseSpecies || sp.name);
 
-        for (const token of sections.Bans || []) {
-            const id = toID(token);
-            if (BAN_TIER_IDS.has(id)) {
-                bans.tiers.add(id);
-                continue;
-            }
+// Shared by Convergence and the generic per-format banlists.
+function parseBanSections(sections) {
+    const bans = {
+        species: new Set(), baseSpecies: new Set(), tiers: new Set(),
+        unbanned: new Set(), unbannedBase: new Set(), abilities: new Set(),
+        restricted: new Set(),
+        restrictedBase: new Set(),
+    };
+    let sawNonSpeciesBan = false;
 
-            const sp = Dex.species.get(token);
-            if (!sp?.exists) {
-                // Item / move / clause / ability. Only abilities matter here.
-                const ab = Dex.abilities.get(token);
-                if (ab?.exists) bans.abilities.add(ab.id);
-                sawNonSpeciesBan = true;
-                continue;
-            }
-            // A base-species ban covers every forme; a forme ban only that forme.
-            (isBaseForme(sp) ? bans.baseSpecies : bans.species).add(sp.id);
+    for (const token of sections.Bans || []) {
+        const id = toID(token);
+        if (BAN_TIER_IDS.has(id)) {
+            bans.tiers.add(id);
+            continue;
         }
 
-        // Evasion Abilities Clause isn't in the /tier output, so (as before) it
-        // is assumed whenever a format bans anything that isn't a Pokémon.
-        if (sawNonSpeciesBan) {
-            bans.abilities.add('sandveil');
-            bans.abilities.add('snowcloak');
-        }
-
-        for (const token of sections.Unbans || []) {
-            const sp = Dex.species.get(token);
-            if (!sp?.exists) continue;
-            bans.unbanned.add(sp.id);
-            if (isBaseForme(sp)) bans.unbannedBase.add(sp.id);
-        }
-
-        for (const token of sections.Restricted || []) {
-            const sp = Dex.species.get(token);
-            if (sp?.exists) bans.restricted.add(sp.id);
-        }
-
-        return bans;
+let sp = Dex.species.get(token);
+let formeOnly = false;
+if (!sp?.exists && /-base$/i.test(token)) {
+    sp = Dex.species.get(token.replace(/-base$/i, ''));
+    formeOnly = true; // bans just the base forme, not the whole species
+}
+if (!sp?.exists) {
+    const ab = Dex.abilities.get(token);
+    if (ab?.exists) bans.abilities.add(ab.id);
+    sawNonSpeciesBan = true;
+    continue;
+}
+((formeOnly || !bansWholeSpecies(token, sp)) ? bans.species : bans.baseSpecies).add(sp.id);
     }
+
+    // Evasion Abilities Clause isn't in the /tier output, so (as before) it
+    // is assumed whenever a format bans anything that isn't a Pokémon.
+    if (sawNonSpeciesBan) {
+        bans.abilities.add('sandveil');
+        bans.abilities.add('snowcloak');
+    }
+
+    for (const token of sections.Unbans || []) {
+        const sp = Dex.species.get(token);
+        if (!sp?.exists) continue;
+        bans.unbanned.add(sp.id);
+        if (bansWholeSpecies(token, sp)) bans.unbannedBase.add(sp.id);
+    }
+
+for (const token of sections.Restricted || []) {
+    const sp = Dex.species.get(token);
+    if (!sp?.exists) continue;
+
+    const tokenId = toID(token);
+    const baseId = toID(sp.baseSpecies || sp.name);
+
+    // Only an explicit base-species entry restricts every forme.
+    if (tokenId === toID(sp.name) && sp.id === baseId) {
+        bans.restrictedBase.add(baseId);
+    } else {
+        // Preserve forme-specific restrictions, including aliases.
+        bans.restricted.add(sp.id);
+    }
+}
+
+    return bans;
+}
 
     function isBannedByList(bans, sp, ignoreTiers = false) {
         if (!bans || !sp?.exists) return false;
@@ -551,6 +581,17 @@
     // The search's `format` may or may not carry the "gen9" prefix depending
     // on the client version, so everything is keyed without it.
     function genericBanFormatId(format) {
+        const rawFormat = String(format || '').split('@@@')[0];
+console.log(LOG, 'format ID diagnostic:', {
+    format,
+    rawFormat,
+    fmtId: fmtId(rawFormat),
+    stripped: stripGen(fmtId(rawFormat)),
+});
+        console.log(LOG, 'format ID diagnostic:', {
+    searchFormat: format,
+    teamFormat: getActiveTeambuilderRoom()?.curTeam?.format,
+});
         const id = stripGen(fmtId(String(format || '').split('@@@')[0]));
         if (!id || GENERIC_BAN_EXCLUDED.some((k) => id.includes(k))) return null;
         return id;
@@ -574,37 +615,38 @@
     function handleGenericBanlistRaw(html) {
         if (!html || !genericBanlists.size || !html.includes('<h2>')) return null;
 
-        const title = new DOMParser().parseFromString(html, 'text/html').querySelector('h2')?.textContent || '';
-        const titleId = stripGen(fmtId(title));
+        // "natdex" and "nationaldex" are the same thing in format names.
+const normFmt = (id) => id.replace(/natdex/g, 'nationaldex');
 
-        let formatId = genericBanlists.has(titleId) ? titleId : null;
-        let usedFallback = false;
+const title = new DOMParser().parseFromString(html, 'text/html').querySelector('h2')?.textContent || '';
+const titleId = normFmt(stripGen(fmtId(title)));
+        console.log(LOG, 'banlist reply title:', JSON.stringify(title), '| pending:', [...genericBanlists.keys()]);
+const titleIsNatdex = titleId.includes('nationaldex');
 
-        // Title didn't match the id we asked for: if exactly one request is
-        // still waiting (sent within the last 15s), assume this is its reply.
-        // in handleGenericBanlistRaw, replace the fallback block:
-        if (!formatId) {
-            const waiting = [...genericBanlists.entries()].filter(
-                ([id, e]) => !e.loaded && e.silent && Date.now() - e.sentAt < 15000
-                // a natdex request must get a natdex reply, never the base format's
-                && (!id.includes('nationaldex') || titleId.includes('nationaldex'))
-            );
-            if (waiting.length === 1 && /Bans\s*<\/b>\s*-/.test(html)) {
-                formatId = waiting[0][0];
-                console.log(LOG, `Banlist title "${title}" did not match "${formatId}"; assuming it is the reply.`);
-            }
-        }
-        if (!formatId) return null;
+let formatId = [...genericBanlists.keys()].find((k) => normFmt(k) === titleId) || null;
 
-        const entry = genericBanlists.get(formatId);
-        const sections = parseFormatSectionTokens(html, null);
-        if (!sections) return null;
+// Title didn't match: if exactly one request is still waiting, assume it's
+// the reply, but natdex-ness must agree in BOTH directions.
+if (!formatId) {
+    const waiting = [...genericBanlists.entries()].filter(([id, e]) =>
+        !e.loaded && e.silent && Date.now() - e.sentAt < 15000 &&
+        normFmt(id).includes('nationaldex') === titleIsNatdex
+    );
+    if (waiting.length === 1 && /Bans\s*<\/b>\s*-/.test(html)) {
+        formatId = waiting[0][0];
+        console.log(LOG, `Banlist title "${title}" did not match "${formatId}"; assuming it is the reply.`);
+    }
+}
+if (!formatId) return null;
 
-        entry.bans = usedFallback && /natdex|nationaldex/.test(formatId)
-            ? parseBanSections({})
-        : parseBanSections(sections);
-        entry.loaded = true;
-        console.log(LOG, `Loaded bans for ${title}`);
+const entry = genericBanlists.get(formatId);
+const sections = parseFormatSectionTokens(html, null);
+if (!sections) return null;
+
+entry.bans = parseBanSections(sections);
+entry.loaded = true;
+console.log(LOG, `Loaded bans for ${title}`);
+
 
         const suppress = entry.silent;
         entry.silent = false; // later manual /tier replies show normally
@@ -625,14 +667,17 @@
     }
 
     function isRestrictedInFormat(search, species) {
-        const id = genericBanFormatId(search.format);
+        const banFormat =
+    getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+const id = genericBanFormatId(banFormat);
         if (!id) return false;
         const entry = requestGenericBanlist(id);
         const restricted = entry.loaded ? entry.bans?.restricted : null;
-        if (!restricted?.size) return false;
-        return restricted.has(species.id) || restricted.has(toID(species.baseSpecies || species.name));
+const restrictedBase = entry.loaded ? entry.bans?.restrictedBase : null;
+if (!restricted?.size && !restrictedBase?.size) return false;
+        const baseId = toID(species.baseSpecies || species.name);
+return restricted.has(species.id) || restrictedBase.has(baseId);
     }
-
     // ---------- server message receiver ----------
 
     const RAW_HANDLERS = [
@@ -916,6 +961,7 @@
     // that forme's stat changes are measured against.
     function resolveMegaForme(dex, item) {
         if (!item?.exists) return null;
+        if (item.zMove || item.zMoveType) return null; // Z-crystals aren't Mega Stones
 
         const special = resolveSpecialMixAndMegaForme(dex, item);
         if (special) return special;
@@ -1087,7 +1133,7 @@
         if (!chart.find('.mnm-speed-note').length) {
             chart.find('.basestatscol').after($(
                 '<div class="mnm-speed-note" style="position:absolute;left:330px;top:350px;z-index:10;">' +
-                'Speed is <span class="mnm-speed-value">0</span> before Mega Evolving</div>'
+                'Speed is <span class="mnm-speed-value">0</span></div>'
             ));
         }
 
@@ -2398,37 +2444,36 @@
         );
     }
 
-    function applyGenericBans(search, results, hasNatdex) {
-        const id = genericBanFormatId(search.format);
-        if (!id) return results;
+function applyGenericBans(search, results, hasNatdex) {
+    const banFormat =
+    getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+const id = genericBanFormatId(banFormat);
+    if (!id) return results;
 
-        const entry = requestGenericBanlist(id);
-        if (!entry.loaded || hasNatdex) return results;
+    const entry = requestGenericBanlist(id);
+if (!entry.loaded) return results;
 
-        const bans = entry.bans;
 
-        // Pokébilities formats only care about banned native abilities, not species/tier bans.
-        if (fmtHas(search.format, 'pokebilities')) {
-            if (!bans.abilities.size) return results;
-            return moveBannedToIllegal(
-                search, results,
-                (sp) => !!nativeBannedAbility(bans, sp),
-                (sp) => `Banned ability: ${nativeBannedAbility(bans, sp)}`
-            );
-        }
+    const bans = entry.bans;
 
-        const natdexFormat = fmtHas(search.format, 'natdex', 'nationaldex');
-        let out = results.filter(
-            (row) => row[0] !== 'pokemon' ||
-            !isBannedByList(bans, search.dex.species.get(row[1]), natdexFormat)
-        );
-
+    // Pokébilities formats only care about banned native abilities.
+    if (fmtHas(search.format, 'pokebilities')) {
+        if (!bans.abilities.size) return results;
         return moveBannedToIllegal(
             search, results,
-            (sp) => isBannedByList(bans, sp),
-            () => 'Banned'
+            (sp) => !!nativeBannedAbility(bans, sp),
+            (sp) => `Banned ability: ${nativeBannedAbility(bans, sp)}`
         );
     }
+
+    // Client tiers are the non-natdex ones, so don't trust them for natdex formats.
+    const ignoreTiers = fmtHas(search.format, 'natdex', 'nationaldex');
+    return moveBannedToIllegal(
+        search, results,
+        (sp) => isBannedByList(bans, sp, ignoreTiers),
+        () => 'Banned'
+    );
+}
 
     // Godly Gift: other Restricted mons move to an "Illegal results" section.
     function applyGodlyGiftLegality(search, results) {
@@ -2842,7 +2887,7 @@
             test: (m) => HAZARD_MOVES.has(m.id),
         },
         pivot: {
-            label: 'Pivot', aliases: ['uturn'],
+            label: 'Pivot', aliases: [''],
             desc: 'Switches the user out after use',
             test: (m) => PIVOT_MOVES.has(m.id) || !!moveField(m, 'selfSwitch'),
         },
@@ -2874,7 +2919,7 @@
 
         bypassprotect: {
             label: 'Bypasses Protect',
-            aliases: ['bypassprotection', 'bypassesprotection', 'breaksprotect', 'ignoreprotect', 'feint'],
+            aliases: ['bypassprotection', 'bypassesprotection', 'breaksprotect', 'ignoreprotect', ''],
             desc: 'Hits through Protect',
             test: bypassesProtect,
         },
@@ -3470,6 +3515,49 @@
         const active = engine.sortCol || '';
         const buttons = [...bar.querySelectorAll('button[data-sort]')];
         for (const btn of buttons) btn.classList.toggle('cur', btn.dataset.sort === active);
+        
+        // On phones, use a wrapping button layout instead of forcing the
+// desktop column positions into the narrow viewport.
+const isMobile = window.matchMedia('(max-width: 600px)').matches;
+
+if (isMobile) {
+    bar.style.position = 'static';
+    bar.style.height = 'auto';
+    bar.style.display = 'flex';
+    bar.style.flexWrap = 'wrap';
+    bar.style.gap = '4px';
+    bar.style.padding = '4px';
+
+    for (const btn of buttons) {
+        btn.style.position = 'static';
+        btn.style.left = 'auto';
+        btn.style.top = 'auto';
+        btn.style.width = 'auto';
+        btn.style.flex = '1 0 38px';
+        btn.style.minWidth = '38px';
+        btn.style.boxSizing = 'border-box';
+        btn.style.padding = '4px 2px';
+    }
+
+    return;
+}
+
+// Restore desktop positioning if the viewport changes back to desktop.
+bar.style.display = '';
+bar.style.flexWrap = '';
+bar.style.gap = '';
+bar.style.padding = '';
+
+for (const btn of buttons) {
+    btn.style.position = '';
+    btn.style.left = '';
+    btn.style.top = '';
+    btn.style.width = '';
+    btn.style.flex = '';
+    btn.style.minWidth = '';
+    btn.style.boxSizing = '';
+    btn.style.padding = '';
+}
 
         const row = document.querySelector('li.result a[data-entry^="item|"] .statcol')?.closest('a');
         if (!row) return;
@@ -3994,7 +4082,13 @@
         return patchMethod(window.TeambuilderRoom?.prototype, 'chartSet', '__qolChartSetPatched', (original) =>
                            function (val, selectNext) {
             const mod = getActiveMod(this);
-            const chartName = this.curChartName;
+const chartName = this.curChartName;
+
+// Capture the stone before Showdown changes the search state on selection.
+const stoneId = chartName === 'pokemon'
+    ? getIntoFilterId(this.search?.engine, 'stone')
+    : null;
+
 
             let nickname = null;
             if (chartName === 'pokemon' && isFusionMod(mod)) {
@@ -4017,18 +4111,18 @@
             if (mod === MOD.CAMOMONS || (mod === MOD.MIX_AND_MEGA && chartName === 'item')) {
                 refreshTypeIcons(this);
             }
-            if (mod === MOD.MIX_AND_MEGA && chartName === 'pokemon' && this.curSet) {
-                const stoneId = getIntoFilterId(this.search?.engine, 'stone');
-                const stone = stoneId && this.curTeam?.dex?.items?.get(stoneId);
-                if (stone?.exists) {
-                    this.curSet.item = stone.name;
-                    this.$('input[name=item]').val(stone.name);
-                    this.save?.();
-                    refreshTypeIcons(this);
-                    this.updateStatForm();
-                    this.updateStatGraph();
-                }
-            }
+            if (mod === MOD.MIX_AND_MEGA && chartName === 'pokemon' && this.curSet && stoneId) {
+    const stone = this.curTeam?.dex?.items?.get(stoneId);
+
+    if (stone?.exists) {
+        this.curSet.item = stone.name;
+        this.$('input[name=item]').val(stone.name);
+        this.save?.();
+        refreshTypeIcons(this);
+        this.updateStatForm();
+        this.updateStatGraph();
+    }
+}
             return result;
         }
                           );
