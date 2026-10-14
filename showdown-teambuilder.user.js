@@ -5,6 +5,7 @@
 // @version      11.0.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
+// @match        https://smogtours.psim.us/*
 // @match        https://calc.pokemonshowdown.com/*
 // @grant        none
 // @run-at       document-start
