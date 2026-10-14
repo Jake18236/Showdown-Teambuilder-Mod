@@ -12,7 +12,7 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 ## Installation for Safari (MacOS and iOS)
 
 1. Download Userscripts on the App Store
-2. Enable the extension
+2. Enable the extension in settings
 3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**, click view, and install the code as an userscript.
 
 
