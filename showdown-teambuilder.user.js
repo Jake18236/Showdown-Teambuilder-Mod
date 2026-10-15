@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      11.1.0
+// @version      12.0.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -3834,95 +3834,96 @@
             pp.after(btn);
         }
     }
-    function patchSearchSort() {
-    return patchMethod(window.BattlePokemonSearch?.prototype, 'sort', '__qolPatched', (original) =>
-                       function (results, sortCol, reverseSort) {
-        const isStatSort = STATS.includes(sortCol) || sortCol === 'bst';
-        if (!isStatSort) return original.call(this, results, sortCol, reverseSort);
 
-        const dex = this.dex;
-        const order = reverseSort ? -1 : 1;
-        const bulkSort = !!this.__qolRealBulk && (sortCol === 'def' || sortCol === 'spd');
-        const valueOf = (stats) =>
+    function patchSearchSort() {
+        return patchMethod(window.BattlePokemonSearch?.prototype, 'sort', '__qolPatched', (original) =>
+                           function (results, sortCol, reverseSort) {
+            const isStatSort = STATS.includes(sortCol) || sortCol === 'bst';
+            if (!isStatSort) return original.call(this, results, sortCol, reverseSort);
+
+            const dex = this.dex;
+            const order = reverseSort ? -1 : 1;
+            const bulkSort = !!this.__qolRealBulk && (sortCol === 'def' || sortCol === 'spd');
+            const valueOf = (stats) =>
             bulkSort ? realBulk(stats, sortCol)
             : sortCol === 'bst' ? sumStats(stats)
             : stats[sortCol];
-        const sortBy = (statsFor) =>
+            const sortBy = (statsFor) =>
             results.sort((a, b) => (valueOf(statsFor(b[1])) - valueOf(statsFor(a[1]))) * order);
 
-        if (this.__qolIntoId) {
-            return sortBy((id) => {
-                const sp = dex.species.get(id);
-                return crossEvolveView(dex, sp, this.__qolIntoId)?.baseStats || sp.baseStats;
-            });
-        }
-        if (this.__qolFromId) {
-            const base = dex.species.get(this.__qolFromId);
-            return sortBy((id) =>
-                          crossEvolveView(dex, base, id)?.baseStats || dex.species.get(id).baseStats);
-        }
-        if (this.__qolStoneId) {
-            return sortBy((id) => {
-                const sp = dex.species.get(id);
-                return mixAndMegaBaseStats(dex, {species: sp.name, item: this.__qolStoneId}) || sp.baseStats;
-            });
-        }
+            if (this.__qolIntoId) {
+                return sortBy((id) => {
+                    const sp = dex.species.get(id);
+                    return crossEvolveView(dex, sp, this.__qolIntoId)?.baseStats || sp.baseStats;
+                });
+            }
+            if (this.__qolFromId) {
+                const base = dex.species.get(this.__qolFromId);
+                return sortBy((id) =>
+                              crossEvolveView(dex, base, id)?.baseStats || dex.species.get(id).baseStats);
+            }
+            if (this.__qolStoneId) {
+                return sortBy((id) => {
+                    const sp = dex.species.get(id);
+                    return mixAndMegaBaseStats(dex, {species: sp.name, item: this.__qolStoneId}) || sp.baseStats;
+                });
+            }
 
-        const mod = getActiveMod();
-        if (!hasSearchListStats(mod)) {
-            return bulkSort
-                ? sortBy((id) => dex.species.get(id).baseStats)
+            const mod = getActiveMod();
+            if (!hasSearchListStats(mod)) {
+                return bulkSort
+                    ? sortBy((id) => dex.species.get(id).baseStats)
                 : original.call(this, results, sortCol, reverseSort);
+            }
+            return sortBy((id) => searchListStats(dex.species.get(id), mod));
         }
-        return sortBy((id) => searchListStats(dex.species.get(id), mod));
+                          );
     }
-    );
-}
 
     function patchSearchRenderer() {
-    return patchMethod(window.BattleSearch?.prototype, 'renderPokemonRow', '__qolPatched', (original) =>
-                       function (pokemon, matchStart, matchLength, errorMessage, attrs) {
-        let shown = pokemon;
-        const call = (mon, err) => {
-            shown = mon;
-            return original.call(this, mon, matchStart, matchLength, err, attrs);
-        };
-        const finish = (html) =>
+        return patchMethod(window.BattleSearch?.prototype, 'renderPokemonRow', '__qolPatched', (original) =>
+                           function (pokemon, matchStart, matchLength, errorMessage, attrs) {
+            let shown = pokemon;
+            const call = (mon, err) => {
+                shown = mon;
+                return original.call(this, mon, matchStart, matchLength, err, attrs);
+            };
+            const finish = (html) =>
             hasRealBulk(this.engine) && shown?.baseStats
-                ? applyRealBulkToRowHtml(html, shown.baseStats)
-                : html;
+            ? applyRealBulkToRowHtml(html, shown.baseStats)
+            : html;
 
-        if (pokemon) {
-            const dex = this.engine.dex;
-            const intoId = getIntoFilterId(this.engine);
-            const fromId = getIntoFilterId(this.engine, 'from');
+            if (pokemon) {
+                const dex = this.engine.dex;
+                const intoId = getIntoFilterId(this.engine);
+                const fromId = getIntoFilterId(this.engine, 'from');
 
-            let view = intoId ? crossEvolveView(dex, pokemon, intoId) : null;
-            if (!view && fromId) view = crossEvolveView(dex, dex.species.get(fromId), pokemon.id);
-            const stoneId = getIntoFilterId(this.engine, 'stone');
-            if (!view && stoneId) view = mnmStoneView(dex, pokemon, stoneId);
+                let view = intoId ? crossEvolveView(dex, pokemon, intoId) : null;
+                if (!view && fromId) view = crossEvolveView(dex, dex.species.get(fromId), pokemon.id);
+                const stoneId = getIntoFilterId(this.engine, 'stone');
+                if (!view && stoneId) view = mnmStoneView(dex, pokemon, stoneId);
 
-            if (view) {
-                return finish(call(Object.assign({}, pokemon, {
-                    baseStats: view.baseStats,
-                    types: view.types,
-                    abilities: view.abilities || pokemon.abilities,
-                }), errorMessage));
+                if (view) {
+                    return finish(call(Object.assign({}, pokemon, {
+                        baseStats: view.baseStats,
+                        types: view.types,
+                        abilities: view.abilities || pokemon.abilities,
+                    }), errorMessage));
+                }
             }
+
+            const filters = this.engine?.typedSearch?.filters ?? [];
+            if (filters.some((f) => Array.isArray(f) && f[0] === 'natdex')) {
+                return finish(call(pokemon, undefined));
+            }
+
+            const mod = getActiveMod();
+            if (!pokemon || !hasSearchListStats(mod)) return finish(call(pokemon, errorMessage));
+
+            return finish(call(Object.assign({}, pokemon, {baseStats: searchListStats(pokemon, mod)}), errorMessage));
         }
-
-        const filters = this.engine?.typedSearch?.filters ?? [];
-        if (filters.some((f) => Array.isArray(f) && f[0] === 'natdex')) {
-            return finish(call(pokemon, undefined));
-        }
-
-        const mod = getActiveMod();
-        if (!pokemon || !hasSearchListStats(mod)) return finish(call(pokemon, errorMessage));
-
-        return finish(call(Object.assign({}, pokemon, {baseStats: searchListStats(pokemon, mod)}), errorMessage));
+                          );
     }
-    );
-}
 
     // Row HTML for suggestion rows: custom rows (toggles / into / from) render
     // through a real, harmless ability id to inherit the native markup, then
@@ -4618,12 +4619,13 @@
         }
     }
 
-    const DOM_DECORATORS = [
+        const DOM_DECORATORS = [
         ['donor icons', decorateDonorIcons],
         ['move filter rows', decorateMoveFilterRows],
         ['pokemon filter rows', decoratePokemonFilterRows],
         ['move prio header', decorateMovePrioHeader],
         ['item sort row', decorateItemSortRow],
+        ['self challenge button', installSelfChallengeButton],
     ];
 
     let domDecoratorsInstalled = false;
@@ -4648,6 +4650,561 @@
                 }
             });
         }).observe(document.documentElement, {childList: true, subtree: true});
+    }
+
+
+    // ====================================================================
+    // SELF CHALLENGE
+    //   Main account challenges a throwaway guest over a 2nd WebSocket and
+    //   you choose for both sides. Session is persisted so a reload resumes.
+    // ====================================================================
+
+    const SELF = {
+        STORE: 'qol-self-session',
+        PREFS: 'qol-self-prefs',
+        MAX_AGE: 6 * 60 * 60 * 1000,
+    };
+
+    const selfEsc = (s) => BattleLog.escapeHTML(String(s ?? ''));
+    const selfWsUrl = () =>
+        `wss://${window.Config?.defaultserver?.host || 'sim3.psim.us'}/showdown/websocket`;
+
+    function selfLoad(key) {
+        try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+    }
+    function selfSave(key, value) {
+        try {
+            if (value == null) localStorage.removeItem(key);
+            else localStorage.setItem(key, JSON.stringify(value));
+        } catch (e) { /* storage unavailable */ }
+    }
+
+    function selfPackedOf(t) {
+        try { const p = Storage.getPackedTeam?.(t); if (p) return p; } catch (e) { /* fall through */ }
+        if (typeof t?.team === 'string') return t.team;
+        return Array.isArray(t?.team) ? Storage.packTeam(t.team) : '';
+    }
+
+    // ---------- session ----------
+
+    function runSelfSession(cfg) {
+        const origReceive = app.receive;
+        const origSend = app.send;
+        const S = {
+            roomid: cfg.roomid || null, ws: null, over: false, stopping: false, bannerOn: false,
+            req: {p1: null, p2: null}, fresh: {p1: false, p2: false},
+            round: [], queue: [], choice: {p1: null, p2: null}, summary: {p1: '', p2: ''},
+            current: null, flushed: false, timers: [], retries: 0,
+        };
+        window.qolSelf = S;
+
+        const log = (...a) => console.log('[self]', ...a);
+        const needs = (r) => !!r && !r.wait;
+        const room = () => app.rooms?.[S.roomid];
+        const later = (fn, ms) => { const t = setTimeout(fn, ms); S.timers.push(t); return t; };
+        const toast = (msg) => { try { app.addPopupMessage(msg); } catch (e) { console.warn('[self]', msg); } };
+
+        const persist = () => selfSave(SELF.STORE, {
+            format: cfg.format, packedA: cfg.packedA, packedB: cfg.packedB,
+            wantName: cfg.wantName, roomid: S.roomid, savedAt: Date.now(),
+        });
+        const setRoom = (rid) => { if (S.roomid) return; S.roomid = rid; persist(); };
+
+        // ---- silence the challenge PM ----
+        const ownIds = () => [cfg.wantName, S.ws?.name].filter(Boolean).map(toSearchId);
+        const isNoise = (line) => {
+            const ids = ownIds();
+            if (line.startsWith('|pm|')) {
+                const p = line.split('|');
+                return ids.includes(toSearchId(p[2])) || ids.includes(toSearchId(p[3]));
+            }
+            if (line.startsWith('|updatechallenges|')) {
+                const flat = toSearchId(line);
+                return ids.some((id) => flat.includes(id));
+            }
+            return false;
+        };
+
+        // ---- banner ----
+        const SIDE_COLOR = {p1: '#2b6cb0', p2: '#c53030'};
+        function renderBanner() {
+            const host = room()?.el?.querySelector?.('.battle-controls') || document.querySelector('.battle-controls');
+            if (!host) return;
+            let el = host.querySelector(':scope > .qol-self-banner');
+            if (!S.bannerOn || S.over || !S.current) { el?.remove(); return; }
+
+            const side = S.current;
+            const r = S.req[side];
+            const mon = r?.teamPreview ? 'Team preview' : (r?.side?.pokemon?.find((p) => p.active)?.details || '').split(',')[0];
+            const idx = S.round.indexOf(side);
+            const step = S.round.length > 1 && idx >= 0 ? `${idx + 1}/${S.round.length} · ` : '';
+            const other = S.round.find((s) => s !== side && S.choice[s]);
+            const locked = other ? `${other.toUpperCase()} locked: ${S.summary[other]}` : '';
+            const back = idx > 0 && !S.flushed;
+            const key = [side, mon, step, locked, back].join('|');
+            if (el?.dataset.key === key) return;
+            if (!el) { el = document.createElement('div'); el.className = 'qol-self-banner'; host.prepend(el); }
+            el.dataset.key = key;
+            el.style.cssText = `background:${SIDE_COLOR[side]};color:#fff;padding:4px 8px;margin:0 0 4px;border-radius:4px;` +
+                'font-size:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+            el.innerHTML = `<span><b>${step}Choosing for ${side.toUpperCase()}</b> — ${selfEsc(mon)}</span>` +
+                (locked ? `<span style="opacity:.85">${selfEsc(locked)}</span>` : '') +
+                (back ? '<button class="button" data-qol-self-back style="margin-left:auto;padding:4px 10px;cursor:pointer">← Back</button>' : '');
+        }
+
+        let raf = 0;
+        const mo = new MutationObserver(() => {
+            if (raf) return;
+            raf = requestAnimationFrame(() => { raf = 0; renderBanner(); });
+        });
+        mo.observe(document.body, {childList: true, subtree: true});
+
+        const onClick = (e) => {
+            if (!e.target.closest?.('[data-qol-self-back]')) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            S.back();
+        };
+        document.addEventListener('click', onClick, true);
+
+        const describe = (side, data) => {
+            const body = data.replace(/^\/(choose|team)\s+/, '').split('|')[0].trim();
+            const r = S.req[side];
+            let m = body.match(/^move\s+(\S+)(.*)$/);
+            if (m) {
+                const mv = r?.active?.[0]?.moves?.[Number(m[1]) - 1];
+                return (mv?.move || m[1]) + (m[2].trim() ? ` (${m[2].trim()})` : '');
+            }
+            m = body.match(/^switch\s+(\d+)/);
+            if (m) return 'switch to ' + (r?.side?.pokemon?.[Number(m[1]) - 1]?.details?.split(',')[0] || m[1]);
+            if (/^\d/.test(body)) return 'team order ' + body;
+            return body;
+        };
+
+        // ---- show a side's request in the room, always from P1's point of view ----
+        function inject(side) {
+            S.current = side;
+            S.bannerOn = true;
+            let tries = 0;
+            const go = () => {
+                if (S.over) return;
+                const rm = room();
+                if (rm?.battle?.atQueueEnd === false && tries++ < 50) return setTimeout(go, 100);
+                const r = S.req[side];
+                const shown = r?.side ? {...r, side: {...r.side, id: 'p1'}} : r;
+                origReceive.call(app, `>${S.roomid}\n|request|${JSON.stringify(shown)}`);
+                renderBanner();
+                log('showing', side);
+            };
+            setTimeout(go, 30);
+        }
+
+        S.back = () => {
+            const i = S.round.indexOf(S.current);
+            if (S.flushed || i <= 0) return;
+            const prev = S.round[i - 1];
+            S.choice[prev] = null;
+            S.summary[prev] = '';
+            S.queue = S.round.slice(i - 1);
+            inject(prev);
+        };
+
+        function tryStartRound() {
+            if (!(S.fresh.p1 && S.fresh.p2)) return;
+            S.fresh = {p1: false, p2: false};
+            S.choice = {p1: null, p2: null};
+            S.summary = {p1: '', p2: ''};
+            S.flushed = false;
+            S.queue = ['p1', 'p2'].filter((s) => needs(S.req[s]));
+            S.round = S.queue.slice();
+            persist(); // refresh savedAt
+            log('round', {rqid: [S.req.p1?.rqid, S.req.p2?.rqid], needs: S.round});
+            if (S.queue.length) inject(S.queue[0]); else { S.bannerOn = false; renderBanner(); }
+        }
+
+        function onRequest(side, r) {
+            // Same rqid again (reconnect / room.request fallback) is not a new round.
+            const dup = S.req[side]?.rqid != null && S.req[side].rqid === r.rqid;
+            S.req[side] = r;
+            if (dup) return;
+            S.fresh[side] = true;
+            tryStartRound();
+        }
+
+        const sendTo = (side, data) =>
+            side === 'p1' ? origSend.call(app, data, S.roomid) : S.ws.send(S.roomid + '|' + data);
+
+        function flush() {
+            S.flushed = true;
+            S.bannerOn = false;
+            renderBanner();
+            for (const side of ['p1', 'p2']) if (S.choice[side]) sendTo(side, S.choice[side]);
+            log('sent', {...S.choice});
+        }
+
+        function finish() {
+            if (S.over) return;
+            S.over = true;
+            S.bannerOn = false;
+            renderBanner();
+            setTimeout(() => S.stop(), 500);
+        }
+
+        // ---- main connection hooks ----
+        const wrappedReceive = function (data) {
+            try {
+                // Drop the PM / challenge traffic involving the guest.
+                if (typeof data === 'string' && !data.startsWith('>') && /\|(pm|updatechallenges)\|/.test(data)) {
+                    const lines = data.split('\n');
+                    const kept = lines.filter((l) => !isNoise(l));
+                    if (kept.length < lines.length) {
+                        data = kept.join('\n');
+                        if (!data.trim()) return;
+                    }
+                }
+
+                if (typeof data === 'string' && data.startsWith('>battle-')) {
+                    const nl = data.indexOf('\n');
+                    const rid = data.slice(1, nl);
+                    if (!S.roomid && S.ws?.name && data.includes('|title|') && data.includes(S.ws.name)) setRoom(rid);
+                    if (rid === S.roomid) {
+                        for (const l of data.slice(nl + 1).split('\n')) {
+                            if (l.startsWith('|request|') && l.length > 9) onRequest('p1', JSON.parse(l.slice(9)));
+                            else if (S.flushed && /^\|error\|\[(Invalid|Unavailable) choice\]/.test(l)) setTimeout(() => inject('p1'), 80);
+                            else if (/^\|(win|tie)\|/.test(l)) finish();
+                        }
+                    }
+                }
+            } catch (e) { console.error('[self] receive hook', e); }
+            return origReceive.call(this, data);
+        };
+        wrappedReceive.__original = origReceive; // keeps the userscript's patchLoop from re-wrapping
+        app.receive = wrappedReceive;
+
+        app.send = function (data, rm) {
+            const id = typeof rm === 'string' ? rm : rm?.id;
+            if (S.roomid && id === S.roomid && typeof data === 'string' && /^\/(choose|team)\b/.test(data)) {
+                const side = S.current;
+                if (S.flushed) { sendTo(side, data); S.bannerOn = false; renderBanner(); return; } // re-choice after an error
+                if (S.queue[0] === side) {
+                    S.choice[side] = data;
+                    S.summary[side] = describe(side, data);
+                    S.queue.shift();
+                    if (S.queue.length) inject(S.queue[0]); else flush();
+                    return;
+                }
+            }
+            return origSend.apply(this, arguments);
+        };
+
+        // ---- guest P2 ----
+        async function onGuestMessage(ws, s) {
+            if (S.stopping) console.log('[self] guest reply while stopping:', s.slice(0, 300));
+            const ch = s.match(/\|challstr\|([^\n]+)/);
+            if (ch && !ws.requested) {
+                ws.requested = true;
+                const url = `https://play.pokemonshowdown.com/action.php?act=getassertion&userid=${toSearchId(ws.wantName)}&challstr=${encodeURIComponent(ch[1])}`;
+                const assertion = (await (await fetch(url)).text()).trim();
+                if (assertion.startsWith(';')) {
+                    toast('Could not log in the guest opponent.');
+                    return S.stop();
+                }
+                ws.send(`|/trn ${ws.wantName},0,${assertion}`);
+            }
+
+            const u = s.match(/\|updateuser\| ?([^|]+)\|1\|/);
+            if (u && !ws.name && toSearchId(u[1]) === toSearchId(ws.wantName)) {
+                ws.name = u[1].trim();
+                S.retries = 0;
+                if (S.roomid) onGuestResumed(); else startChallenge(ws);
+            }
+
+            if (s.startsWith('>battle-')) {
+                const nl = s.indexOf('\n');
+                const rid = s.slice(1, nl);
+                setRoom(rid);
+                if (rid !== S.roomid) return;
+                for (const l of s.slice(nl + 1).split('\n')) {
+                    if (l.startsWith('|request|') && l.length > 9) onRequest('p2', JSON.parse(l.slice(9)));
+                    else if (l.startsWith('|error|')) {
+                        origReceive.call(app, `>${S.roomid}\n|error|P2: ${l.slice(7)}`);
+                        if (S.flushed && /\[(Invalid|Unavailable) choice\]/.test(l)) setTimeout(() => inject('p2'), 80);
+                    } else if (/^\|(win|tie)\|/.test(l)) finish();
+                }
+            }
+        }
+
+        function startChallenge(ws) {
+            ws.send('|/utm ' + cfg.packedB);
+            origSend.call(app, '/utm ' + cfg.packedA);
+            origSend.call(app, `/challenge ${ws.name}, ${cfg.format}`);
+            const accept = () => { if (!S.roomid && !S.stopping) ws.send(`|/accept ${app.user.get('name')}`); };
+            later(accept, 500);
+            later(accept, 4000);
+            log('challenging', ws.name, cfg.format);
+        }
+
+        // Reload / reconnect: the server rejoins both players to the battle on its own,
+        // so we only need requests from both sides again.
+        function onGuestResumed() {
+            log('guest reconnected, resuming', S.roomid);
+            const p1Fallback = () => {
+                const r = room()?.request;
+                if (!S.req.p1 && r?.side) onRequest('p1', r); // request arrived before our hook was installed
+            };
+            later(p1Fallback, 2500);
+            later(p1Fallback, 6000);
+            later(() => {
+                if (S.req.p2 || S.over) return;
+                toast('The self-battle could not be resumed (it may have ended).');
+                S.stop();
+            }, 20000);
+        }
+
+        function connect() {
+            if (S.stopping) return;
+            const ws = new WebSocket(selfWsUrl());
+            S.ws = ws;
+            ws.wantName = cfg.wantName;
+            ws.onmessage = (e) => {
+                onGuestMessage(ws, String(e.data)).catch((err) => console.error('[self] guest', err));
+            };
+            ws.onclose = () => {
+                if (S.stopping || S.over || S.ws !== ws) return;
+                if (!S.roomid || ++S.retries > 5) { log('guest connection lost'); return; }
+                later(connect, 2000); // keep the same name; the server puts us back in the battle
+            };
+        }
+
+                S.stop = (opts = {}) => {
+            if (S.stopping) return;
+            const ws = S.ws;
+            log('stop requested', {forfeit: !!opts.forfeit, wsState: ws?.readyState, roomid: S.roomid});
+
+            S.stopping = true;
+            S.over = true;
+            S.bannerOn = false;
+            S.timers.forEach(clearTimeout);
+            app.receive = origReceive;
+            app.send = origSend;
+            document.removeEventListener('click', onClick, true);
+            mo.disconnect();
+            renderBanner();
+
+            let closeDelay = 0;
+            if (opts.forfeit) {
+                if (ws?.readyState === WebSocket.OPEN && S.roomid) {
+                    ws.send(`${S.roomid}|Match stopped.`);
+                    setTimeout(() => { try { ws.send(`${S.roomid}|/forfeit`); } catch (e) { /* closed */ } }, 300);
+                    closeDelay = 1500; // keep the socket open until the forfeit has gone through
+                } else {
+                    log('could not forfeit: guest socket not open or no room id');
+                }
+            }
+            setTimeout(() => { try { ws?.close(); } catch (e) { /* already closed */ } }, closeDelay);
+
+            if (!opts.keepSession) selfSave(SELF.STORE, null);
+            log('stopped');
+        };
+
+        persist();
+        connect();
+        return S;
+    }
+
+    function startSelfChallenge(cfg) {
+        if (window.qolSelf && !window.qolSelf.over) {
+            app.addPopupMessage('A self-battle is already running.');
+            return;
+        }
+        if (!app.user?.get?.('named')) {
+            app.addPopupMessage('Log in before challenging yourself.');
+            return;
+        }
+        runSelfSession({
+            ...cfg,
+            wantName: `QolB${Math.floor(Math.random() * 90000 + 10000)}`,
+            roomid: null,
+        });
+    }
+
+    // Called once at boot: picks a saved session back up after a reload.
+    function resumeSelfChallenge() {
+        const saved = selfLoad(SELF.STORE);
+        if (!saved) return;
+        if (!saved.roomid || !saved.wantName || Date.now() - (saved.savedAt || 0) > SELF.MAX_AGE) {
+            selfSave(SELF.STORE, null);
+            return;
+        }
+
+        let tries = 0;
+        const timer = setInterval(() => {
+            const ready = window.app?.receive && window.app.send && window.BattleLog && document.body;
+            if (!ready) {
+                if (++tries > 1200) clearInterval(timer); // ~60s
+                return;
+            }
+            clearInterval(timer);
+            if (window.qolSelf && !window.qolSelf.over) return;
+            try {
+                runSelfSession(saved);
+            } catch (e) {
+                console.error('[self] resume failed:', e);
+            }
+        }, 50);
+    }
+
+    // ---------- popup (Showdown's own Popup so it matches the client) ----------
+
+    let selfPopupClass = null;
+
+    function selfTeamEntries() {
+        const out = [];
+        (window.Storage?.teams || []).forEach((t, index) => {
+            const formatKey = toSearchId(t?.format);
+            if (!t || !formatKey || !selfPackedOf(t)) return;
+            out.push({index, t, formatKey, raw: String(t.format)});
+        });
+        return out;
+    }
+
+    function getSelfPopupClass() {
+        if (selfPopupClass) return selfPopupClass;
+
+        selfPopupClass = window.Popup.extend({
+            type: 'semimodal',
+
+            events: {
+                'submit form': 'submit',
+                'change select[name=format]': 'fillTeams',
+                'click button[data-qol=cancel]': 'cancelSelf',
+                'click button[data-qol=stop]': 'stopSelf',
+            },
+
+            initialize() {
+                const running = window.qolSelf && !window.qolSelf.over;
+                if (running) {
+                    this.$el.html(
+                        '<div style="width:min(300px,78vw)">' +
+                        '<p><strong>Self-battle in progress</strong></p>' +
+                        '<p class="buttonbar">' +
+                        '<button type="button" data-qol="stop" class="button">Stop self-battle</button> ' +
+                        '<button type="button" data-qol="cancel" class="button">Close</button></p></div>'
+                    );
+                    return;
+                }
+
+                this.entries = selfTeamEntries();
+                this.formats = new Map();
+                for (const e of this.entries) {
+                    if (!this.formats.has(e.formatKey)) {
+                        this.formats.set(e.formatKey, {raw: e.raw, name: window.BattleFormats?.[e.formatKey]?.name || e.raw});
+                    }
+                }
+
+                if (!this.entries.length) {
+                    this.$el.html(
+                        '<div style="width:min(300px,78vw)"><p>You need at least one saved team in the Teambuilder.</p>' +
+                        '<p class="buttonbar"><button type="button" data-qol="cancel" class="button">Close</button></p></div>'
+                    );
+                    return;
+                }
+
+                const prefs = selfLoad(SELF.PREFS) || {};
+                const keys = [...this.formats.keys()].sort((a, b) =>
+                    this.formats.get(a).name.localeCompare(this.formats.get(b).name));
+                const formatOptions = keys.map((k) =>
+                    `<option value="${selfEsc(k)}">${selfEsc(this.formats.get(k).name)}</option>`).join('');
+                const sel = 'class="button" style="width:100%;box-sizing:border-box"';
+
+                this.$el.html(
+                    '<form style="width:min(300px,78vw)">' +
+                    '<p><strong>Challenge Yourself</strong></p>' +
+                    `<p><label class="label">Format<br><select name="format" ${sel}>${formatOptions}</select></label></p>` +
+                    `<p><label class="label">Your team<br><select name="teamA" ${sel}></select></label></p>` +
+                    `<p><label class="label">Opponent's team<br><select name="teamB" ${sel}></select></label></p>` +
+                    '<p class="buttonbar"><button type="submit" class="button"><strong>Challenge</strong></button> ' +
+                    '<button type="button" data-qol="cancel" class="button">Cancel</button></p></form>'
+                );
+
+                if (prefs.formatKey && this.formats.has(prefs.formatKey)) this.$('select[name=format]').val(prefs.formatKey);
+                this.fillTeams(null, prefs);
+            },
+
+            // Called on format change (event arg first) and once from initialize (prefs second).
+            fillTeams(e, prefs) {
+                const key = this.$('select[name=format]').val();
+                const list = this.entries.filter((en) => en.formatKey === key);
+                const opts = list.map((en) =>
+                    `<option value="${en.index}">${selfEsc((en.t.folder ? en.t.folder + '/' : '') + en.t.name)}</option>`).join('');
+                const a = this.$('select[name=teamA]').html(opts);
+                const b = this.$('select[name=teamB]').html(opts);
+                if (!list.length) return;
+
+                const byName = (name) => list.find((en) => en.t.name === name);
+                const pickA = byName(prefs?.nameA) || list[0];
+                const pickB = byName(prefs?.nameB) || list[1] || list[0];
+                a.val(String(pickA.index));
+                b.val(String(pickB.index));
+            },
+
+            submit(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                const key = this.$('select[name=format]').val();
+                const teamA = Storage.teams[Number(this.$('select[name=teamA]').val())];
+                const teamB = Storage.teams[Number(this.$('select[name=teamB]').val())];
+                const fmt = this.formats.get(key);
+                if (!teamA || !teamB || !fmt) return;
+
+                selfSave(SELF.PREFS, {formatKey: key, nameA: teamA.name, nameB: teamB.name});
+                this.close();
+                startSelfChallenge({format: fmt.raw, packedA: selfPackedOf(teamA), packedB: selfPackedOf(teamB)});
+            },
+
+            stopSelf() {
+                window.qolSelf?.stop?.({forfeit: true});
+                this.close();
+            },
+
+            cancelSelf() {
+                this.close();
+            },
+        });
+
+        return selfPopupClass;
+    }
+
+    function openSelfChallengePopup() {
+        if (!window.app?.addPopup || !window.Popup) return;
+        app.addPopup(getSelfPopupClass());
+    }
+
+    // ---------- main menu button (below Tournaments) ----------
+
+    function installSelfChallengeButton() {
+        if (IS_DAMAGE_CALC) return;
+
+        const tournaments = document.querySelector('.menugroup button[value="/smogtours"]');
+        const group = tournaments?.closest('.menugroup');
+        if (!group || group.querySelector('#qol-self-challenge')) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = 'qol-self-challenge';
+        button.className = 'button mainmenu4'; // same look as Tournaments
+        button.style.cursor = 'pointer';
+        button.textContent = 'Challenge Yourself';
+        button.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { openSelfChallengePopup(); } catch (err) { console.error('[self] popup failed:', err); }
+        });
+
+        const row = document.createElement('p');
+        row.appendChild(button);
+        const after = tournaments.closest('p');
+        if (after) after.after(row); else group.appendChild(row);
     }
 
     // ====================================================================
@@ -6339,4 +6896,6 @@
     installMnmSpeedNoteListener();
     installDomDecorators();
     installCoverageSeparatorFix();
+    resumeSelfChallenge();
+
 })();
