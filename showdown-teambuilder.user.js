@@ -95,7 +95,9 @@
         ['flipped', MOD.FLIPPED],
         ['350cup', MOD.THREE_FIFTY_CUP],
         ['natureswap', MOD.NATURE_SWAP],
+
         ['camomons', MOD.CAMOMONS],
+        ['camove', MOD.CAMOMONS],
     ];
 
     function modFromFormat(format) {
@@ -1645,6 +1647,7 @@
     // Native learnset check OR Alphabet Cup letter rule (used by Pokémon search filters).
     function pokemonMatchesMove(ctx, original, row, species, moveId) {
         if (original.call(ctx, row, [['move', moveId]])) return true;
+        if (fmtHas(ctx.format, CAMOVE_FORMAT_ID)) return getAlphabetCupCache(ctx.dex).ids.has(toID(moveId));
         return fmtHas(ctx.format, ALPHABET_CUP_FORMAT_ID) && alphabetCupCanLearn(ctx.dex, species, moveId);
     }
 
@@ -1656,6 +1659,22 @@
         if (!species?.exists) return results;
 
         return addMovesToResults(search, results, species, alphabetCupMoveIds(search.dex, species));
+    }
+
+    // ---------- Camove Chaos: every move is legal ----------
+
+    const CAMOVE_FORMAT_ID = 'camove';
+
+    function camoveMoveResults(search, base) {
+        const results = base();
+        if (!search.species) return results;
+
+        const species = search.dex.species.get(search.species);
+        if (!species?.exists) return results;
+
+        const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
+        const add = [...getAlphabetCupCache(search.dex).ids].filter((id) => !have.has(id));
+        return add.length ? addMovesToResults(search, results, species, add) : results;
     }
 
     // ---------- National Dex movepool (move-search "natdex" chip) ----------
@@ -1965,6 +1984,7 @@
         {match: (f) => fmtHas(f, 'inheritance'), run: inheritanceMoveResults},
         {match: (f) => fmtHas(f, CONVERGENCE_FORMAT_ID), run: convergenceMoveResults},
         {match: (f) => fmtHas(f, ALPHABET_CUP_FORMAT_ID), run: alphabetCupMoveResults},
+        {match: (f) => fmtHas(f, CAMOVE_FORMAT_ID), run: camoveMoveResults},
     ];
 
     function patchAbilitySearchResults() {
@@ -2740,6 +2760,7 @@
         steelwing: {def: 1}, stuffcheeks: {def: 2}, swordsdance: {atk: 2}, tailglow: {spa: 3},
         takeheart: {spa: 1, spd: 1}, tidyup: {atk: 1, spe: 1}, torchsong: {spa: 1}, trailblaze: {spe: 1},
         victorydance: {atk: 1, def: 1, spe: 1}, withdraw: {def: 1}, workup: {atk: 1, spa: 1},
+        electroshot: {spa: 1}, meteorbeam: {spa: 1},
         // self-lowering attacks
         closecombat: {def: -1, spd: -1}, superpower: {atk: -1, def: -1}, overheat: {spa: -2},
         dracometeor: {spa: -2}, leafstorm: {spa: -2}, fleurcannon: {spa: -2}, psychoboost: {spa: -2},
@@ -4619,13 +4640,14 @@
         }
     }
 
-        const DOM_DECORATORS = [
+    const DOM_DECORATORS = [
         ['donor icons', decorateDonorIcons],
         ['move filter rows', decorateMoveFilterRows],
         ['pokemon filter rows', decoratePokemonFilterRows],
         ['move prio header', decorateMovePrioHeader],
         ['item sort row', decorateItemSortRow],
         ['self challenge button', installSelfChallengeButton],
+        ['usage stats button', installUsageStatsButton],
     ];
 
     let domDecoratorsInstalled = false;
@@ -4667,7 +4689,7 @@
 
     const selfEsc = (s) => BattleLog.escapeHTML(String(s ?? ''));
     const selfWsUrl = () =>
-        `wss://${window.Config?.defaultserver?.host || 'sim3.psim.us'}/showdown/websocket`;
+    `wss://${window.Config?.defaultserver?.host || 'sim3.psim.us'}/showdown/websocket`;
 
     function selfLoad(key) {
         try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
@@ -4715,6 +4737,7 @@
         const isNoise = (line) => {
             const ids = ownIds();
             if (line.startsWith('|pm|')) {
+                if (/\/error|rejected/i.test(line)) return false;
                 const p = line.split('|');
                 return ids.includes(toSearchId(p[2])) || ids.includes(toSearchId(p[3]));
             }
@@ -4832,7 +4855,7 @@
         }
 
         const sendTo = (side, data) =>
-            side === 'p1' ? origSend.call(app, data, S.roomid) : S.ws.send(S.roomid + '|' + data);
+        side === 'p1' ? origSend.call(app, data, S.roomid) : S.ws.send(S.roomid + '|' + data);
 
         function flush() {
             S.flushed = true;
@@ -4861,6 +4884,9 @@
                         data = kept.join('\n');
                         if (!data.trim()) return;
                     }
+                }
+                if (typeof data === 'string' && !S.roomid && /\|popup\|[^\n]*rejected/i.test(data)) {
+                    setTimeout(() => S.stop(), 0);
                 }
 
                 if (typeof data === 'string' && data.startsWith('>battle-')) {
@@ -4900,6 +4926,14 @@
         // ---- guest P2 ----
         async function onGuestMessage(ws, s) {
             if (S.stopping) console.log('[self] guest reply while stopping:', s.slice(0, 300));
+                        // Surface the guest's own errors (e.g. "Your team was rejected...") on the main client.
+            if (!s.startsWith('>')) {
+                const popup = s.split('\n').find((l) => l.startsWith('|popup|'));
+                if (popup) {
+                    origReceive.call(app, '|popup|Opponent (P2) team:||' + popup.slice(7));
+                    if (!S.roomid && /rejected/i.test(popup)) later(() => S.stop(), 0);
+                }
+            }
             const ch = s.match(/\|challstr\|([^\n]+)/);
             if (ch && !ws.requested) {
                 ws.requested = true;
@@ -4976,7 +5010,7 @@
             };
         }
 
-                S.stop = (opts = {}) => {
+        S.stop = (opts = {}) => {
             if (S.stopping) return;
             const ws = S.ws;
             log('stop requested', {forfeit: !!opts.forfeit, wsState: ws?.readyState, roomid: S.roomid});
@@ -5112,9 +5146,9 @@
 
                 const prefs = selfLoad(SELF.PREFS) || {};
                 const keys = [...this.formats.keys()].sort((a, b) =>
-                    this.formats.get(a).name.localeCompare(this.formats.get(b).name));
+                                                           this.formats.get(a).name.localeCompare(this.formats.get(b).name));
                 const formatOptions = keys.map((k) =>
-                    `<option value="${selfEsc(k)}">${selfEsc(this.formats.get(k).name)}</option>`).join('');
+                                               `<option value="${selfEsc(k)}">${selfEsc(this.formats.get(k).name)}</option>`).join('');
                 const sel = 'class="button" style="width:100%;box-sizing:border-box"';
 
                 this.$el.html(
@@ -5136,7 +5170,7 @@
                 const key = this.$('select[name=format]').val();
                 const list = this.entries.filter((en) => en.formatKey === key);
                 const opts = list.map((en) =>
-                    `<option value="${en.index}">${selfEsc((en.t.folder ? en.t.folder + '/' : '') + en.t.name)}</option>`).join('');
+                                      `<option value="${en.index}">${selfEsc((en.t.folder ? en.t.folder + '/' : '') + en.t.name)}</option>`).join('');
                 const a = this.$('select[name=teamA]').html(opts);
                 const b = this.$('select[name=teamB]').html(opts);
                 if (!list.length) return;
@@ -5204,6 +5238,844 @@
         const row = document.createElement('p');
         row.appendChild(button);
         const after = tournaments.closest('p');
+        if (after) after.after(row); else group.appendChild(row);
+    }
+
+
+    // ====================================================================
+    // SMOGON USAGE STATS TAB
+    //   "Stats" main-menu button -> a tab with month / format / rating
+    //   baseline / sort controls and a list of every Pokémon. Each row
+    //   expands into the movesets data (abilities, items, moves, spreads,
+    //   Tera types, teammates, checks and counters).
+    //
+    //   Data: https://www.smogon.com/stats/<month>/chaos/<format>-<baseline>.json
+    //   (the chaos JSON holds everything the moveset .txt files do).
+    // ====================================================================
+
+    const USAGE = {
+        BASE: 'https://www.smogon.com/stats/',
+        ROOM_ID: 'view-qolusagestats',
+        PREFS: 'qol-usage-prefs',
+        // Tried in order; the first one that answers is remembered. smogon.com
+        // may not send CORS headers, in which case the proxies take over.
+        FETCHERS: [
+            (url) => 'https://smogon-stats.bobthedude132.workers.dev/' + url.slice(USAGE.BASE.length),
+            (url) => url,
+        ],
+        BASELINE_PREFERENCE: [1630, 1695, 1500, 1760, 1825],
+        MAX_CACHED_DATASETS: 4,
+        TOP: {abilities: 8, items: 10, moves: 14, spreads: 6, tera: 6, teammates: 10, counters: 8},
+    };
+
+    const USAGE_SORTS = {
+        usage: {label: 'Usage %'},
+        raw: {label: 'Raw count'},
+        viability: {label: 'Viability ceiling'},
+    };
+    const USAGE_STAT_LABELS = ['HP', 'Atk', 'Def', 'SpA', 'SpD', 'Spe'];
+    const USAGE_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                          'August', 'September', 'October', 'November', 'December'];
+
+    const usageEsc = (s) => BattleLog.escapeHTML(String(s ?? ''));
+    const usageLastSegment = (href) => String(href).replace(/\/+$/, '').split('/').pop();
+
+    // ---------- network ----------
+
+    let usageFetcherIndex = 0;
+
+    async function usageFetchText(url, isValid) {
+        const errors = [];
+        for (let n = 0; n < USAGE.FETCHERS.length; n++) {
+            const i = (usageFetcherIndex + n) % USAGE.FETCHERS.length;
+            const target = USAGE.FETCHERS[i](url);
+            try {
+                const response = await fetch(target);
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const text = await response.text();
+                if (isValid && !isValid(text)) throw new Error('unexpected response');
+                usageFetcherIndex = i;
+                return text;
+            } catch (error) {
+                errors.push(`${new URL(target).host}: ${error.message}`);
+            }
+        }
+        throw new Error(errors.join(' | '));
+    }
+
+    const usageDirCache = new Map();
+    function usageListDir(url) {
+        if (!usageDirCache.has(url)) {
+            const promise = usageFetchText(url, (t) => /href\s*=/i.test(t)).then((html) =>
+                                                                                 [...html.matchAll(/href="([^"?#]+)"/gi)].map((m) => {
+                try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+            })
+                                                                                );
+            usageDirCache.set(url, promise);
+            promise.catch(() => usageDirCache.delete(url));
+        }
+        return usageDirCache.get(url);
+    }
+
+    // Newest first.
+    async function usageMonths() {
+        const hrefs = await usageListDir(USAGE.BASE);
+        const months = new Set(hrefs.map(usageLastSegment).filter((s) => /^\d{4}-\d{2}(-.+)?$/.test(s)));
+        return [...months].sort((a, b) => b.localeCompare(a));
+    }
+
+    // formatId -> ascending list of rating baselines published that month.
+    async function usageFormats(month) {
+        const hrefs = await usageListDir(`${USAGE.BASE}${month}/chaos/`);
+        const formats = new Map();
+        for (const href of hrefs) {
+            const m = usageLastSegment(href).match(/^(.+)-(\d+)\.json$/);
+            if (!m) continue;
+            if (!formats.has(m[1])) formats.set(m[1], []);
+            formats.get(m[1]).push(Number(m[2]));
+        }
+        for (const list of formats.values()) list.sort((a, b) => a - b);
+        return formats;
+    }
+
+    // ---------- data ----------
+
+    // ASSUMPTION: chaos JSON stores the ceiling as an array whose first entry is
+    // the number shown in the moveset .txt. If the numbers look wrong, inspect
+    // an entry's "Viability Ceiling" in the console and adjust this one function.
+    function usageViability(entry) {
+        const v = entry['Viability Ceiling'];
+        if (!Array.isArray(v)) return Number.isFinite(Number(v)) ? Math.floor(Number(v)) : null;
+        const top = Number(v[1]); // [players, top GXE, 99th percentile GXE, 95th percentile GXE]
+        return Number.isFinite(top) ? Math.floor(top) : null;
+    }
+    function usageBuildDataset(json) {
+        const rows = Object.entries(json.data || {}).map(([name, entry]) => ({
+            name,
+            id: toID(name),
+            usage: Number(entry.usage) || 0, // fraction of teams (sums to 6 across a format)
+            raw: Number(entry['Raw count']) || 0,
+            viability: usageViability(entry),
+            entry,
+            rank: 0,
+        }));
+        rows.sort((a, b) => b.usage - a.usage || b.raw - a.raw);
+        rows.forEach((row, i) => { row.rank = i + 1; });
+        return {
+            info: json.info || {},
+            rows,
+            byId: new Map(rows.map((r) => [r.id, r])),
+            maxUsage: rows[0]?.usage || 1,
+        };
+    }
+
+    const usageDatasets = new Map(); // small LRU: these files can be several MB
+    async function usageLoadDataset(month, format, baseline) {
+        const key = `${month}/${format}-${baseline}`;
+        if (usageDatasets.has(key)) {
+            const hit = usageDatasets.get(key);
+            usageDatasets.delete(key);
+            usageDatasets.set(key, hit);
+            return hit;
+        }
+
+        const url = `${USAGE.BASE}${month}/chaos/${format}-${baseline}.json`;
+        const text = await usageFetchText(url, (t) => t.trimStart().startsWith('{'));
+        const dataset = usageBuildDataset(JSON.parse(text));
+
+        usageDatasets.set(key, dataset);
+        while (usageDatasets.size > USAGE.MAX_CACHED_DATASETS) {
+            usageDatasets.delete(usageDatasets.keys().next().value);
+        }
+        return dataset;
+    }
+
+    // ---------- labels ----------
+
+    function usageMonthLabel(id) {
+        const m = String(id).match(/^(\d{4})-(\d{2})(?:-(.+))?$/);
+        if (!m) return id;
+        return `${USAGE_MONTHS[Number(m[2]) - 1] || m[2]} ${m[1]}` + (m[3] ? ` (${m[3]})` : '');
+    }
+
+    const usageGenOf = (id) => Number(String(id).match(/^gen(\d+)/)?.[1]) || 0;
+
+    function usageFormatLabel(id) {
+        const known = window.BattleFormats?.[id]?.name;
+        if (known) return known;
+        const m = String(id).match(/^gen(\d+)(.*)$/);
+        return m ? `[Gen ${m[1]}] ${m[2] || id}` : id;
+    }
+
+    function usageDexFor(format) {
+        const gen = usageGenOf(format);
+        try { return gen && Dex.forGen ? Dex.forGen(gen) : Dex; } catch (e) { return Dex; }
+    }
+
+    // [{gen, items: [{id, label}]}], newest generation first.
+    function usageGroupFormats(ids) {
+        const groups = new Map();
+        for (const id of ids) {
+            const gen = usageGenOf(id);
+            if (!groups.has(gen)) groups.set(gen, []);
+            groups.get(gen).push({id, label: usageFormatLabel(id).replace(/^\[Gen \d+\]\s*/, '')});
+        }
+        return [...groups.entries()]
+            .sort((a, b) => b[0] - a[0])
+            .map(([gen, items]) => ({gen, items: items.sort((a, b) => a.label.localeCompare(b.label))}));
+    }
+
+    // ---------- row + detail HTML ----------
+
+    const usagePct = (n) => n.toFixed(n >= 10 ? 1 : 2) + '%';
+
+    const usageTop = (obj, limit) =>
+    Object.entries(obj || {})
+    .filter(([key, value]) => key && value > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+
+    // One list line with a faint bar behind it. `percent` drives the bar.
+    function usageListRow(inner, percent, valueHtml = null, attrs = '') {
+        const width = Math.max(0, Math.min(100, percent));
+        return `<div class="qol-us-li"${attrs} style="--w:${width.toFixed(1)}%">` +
+            `<span class="qol-us-li-name">${inner}</span>` +
+            `<span class="qol-us-li-val">${valueHtml ?? usagePct(percent)}</span></div>`;
+    }
+
+    const usageSection = (title, rows, hint = '') =>
+    rows.length
+    ? `<section><h4${hint ? ` title="${usageEsc(hint)}"` : ''}>${title}</h4>${rows.join('')}</section>`
+    : '';
+
+    function usageCounterEntries(entry) {
+        let raw = entry['Checks and Counters'];
+        if (!raw) {
+            const key = Object.keys(entry).find((k) => /check|counter/i.test(k));
+            raw = key ? entry[key] : null;
+        }
+        if (!raw || typeof raw !== 'object') return [];
+
+        return Object.entries(raw).map(([name, v]) => {
+            const nums = (Array.isArray(v) ? v : [v]).map(Number).filter(Number.isFinite);
+            if (!nums.length) return null;
+            let n = NaN, p, d = 0;
+            if (nums.length >= 3) [n, p, d] = nums;
+            else if (nums.length === 2) [p, d] = nums;
+            else [p] = nums;
+            if (p > 1.5) p /= 100;
+            if (d > 1.5) d /= 100;
+            return {name, n, p, d, score: p - 4 * d};
+        }).filter(Boolean).sort((a, b) => b.score - a.score);
+    }
+
+    function usageDetailHtml(row, dex) {
+        const e = row.entry;
+        const T = USAGE.TOP;
+        const sum = (obj) => Object.values(obj || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+        // Every battle has exactly one ability/item/spread, so either sum is the weighted game count.
+        const total = sum(e.Abilities) || sum(e.Items) || sum(e.Spreads);
+        const share = (v) => (total ? (v / total) * 100 : 0);
+
+        const species = dex.species.get(row.name);
+        const catIcon = (move) =>
+        typeof Dex.getCategoryIcon === 'function' ? Dex.getCategoryIcon(move.category) : '';
+
+        const abilities = usageTop(e.Abilities, T.abilities).map(([key, v]) => {
+            const ability = dex.abilities.get(key);
+            return usageListRow(usageEsc(ability?.exists ? ability.name : key), share(v));
+        });
+
+        const items = usageTop(e.Items, T.items).map(([key, v]) => {
+            const item = dex.items.get(key);
+            if (!item?.exists) {
+                return usageListRow(usageEsc(toID(key) === 'nothing' ? 'Nothing' : key), share(v));
+            }
+            const icon = `<span class="itemicon" style="${Dex.getItemIcon(item.name)}"></span>`;
+            return usageListRow(icon + usageEsc(item.name), share(v));
+        });
+
+        const moves = usageTop(e.Moves, T.moves).map(([key, v]) => {
+            const move = dex.moves.get(key);
+            if (!move?.exists) return usageListRow(usageEsc(key), share(v));
+            return usageListRow(Dex.getTypeIcon(move.type) + catIcon(move) + usageEsc(move.name), share(v));
+        });
+
+        const spreads = usageTop(e.Spreads, T.spreads).map(([key, v]) => {
+            const [nature, evs = ''] = key.split(':');
+            const parts = evs.split('/').map(Number);
+            const text = USAGE_STAT_LABELS
+            .map((label, i) => (parts[i] ? `${parts[i]} ${label}` : null))
+            .filter(Boolean).join(' / ') || 'No EVs';
+            return usageListRow(`<b>${usageEsc(nature)}</b>&nbsp;${usageEsc(text)}`, share(v), null,
+                                ` title="${usageEsc(key)}"`);
+        });
+
+        const tera = usageTop(e['Tera Types'], T.tera).map(([key, v]) => {
+            const type = capitalize(key);
+            const known = Dex.types?.get?.(type)?.exists;
+            return usageListRow(known ? Dex.getTypeIcon(type) : usageEsc(type), share(v));
+        });
+
+        const mates = usageTop(e.Teammates, T.teammates).map(([name, v]) => {
+            const sp = dex.species.get(name);
+            return usageListRow(pokemonIconHtml(toID(name)) + usageEsc(sp?.exists ? sp.name : name), share(v), null,
+                                ` data-jump="${usageEsc(toID(name))}"`);
+        });
+
+        // [encounters, P(this mon is KO'd or forced out), standard deviation]
+        const counterList = usageCounterEntries(e);
+        if (!counterList.length) console.log(LOG, 'No checks/counters for', row.name, '- keys:', Object.keys(e));
+        const counters = counterList.map((c) => {
+            const sp = dex.species.get(c.name);
+            const label = sp?.exists ? sp.name : c.name;
+            return usageListRow(
+                pokemonIconHtml(toID(c.name)) + usageEsc(label), c.p * 100,
+                `${(c.p * 100).toFixed(1)}<small>±${(c.d * 100).toFixed(1)}</small>`,
+                ` data-jump="${usageEsc(toID(c.name))}"`
+            );
+        });
+
+        const header =
+              `<div class="qol-us-dhead">${species?.exists ? typeIconsHtml(species.types) : ''}` +
+              `<span>${row.raw.toLocaleString()} raw uses</span>` +
+              (row.viability != null ? `<span>Viability ceiling ${row.viability}</span>` : '') + '</div>';
+
+        return header +
+            usageSection('Abilities', abilities) +
+            usageSection('Items', items) +
+            usageSection('Moves', moves) +
+            usageSection('Spreads', spreads) +
+            usageSection('Tera Types', tera) +
+            usageSection('Teammates', mates, 'Click one to jump to it') +
+            usageSection('Checks and Counters', counters, 'How often this Pokémon is KO’d or forced out by each one (± standard deviation)');
+    }
+
+    function usageRowHtml(row, maxUsage, open, dex) {
+        return `<li class="qol-us-row${open ? ' open' : ''}" data-id="${row.id}">` +
+            `<div class="qol-us-head" role="button" tabindex="0" data-act="toggle" data-id="${row.id}">` +
+            `<span class="qol-us-rank">${row.rank}</span>` +
+            `<span class="qol-us-icon">${pokemonIconHtml(row.id)}</span>` +
+            `<span class="qol-us-name">${usageEsc(row.name)}</span>` +
+
+            `<span class="qol-us-pct">${(row.usage * 100).toFixed(2)}%</span>` +
+            `<span class="qol-us-raw">${row.raw.toLocaleString()}</span>` +
+            `<span class="qol-us-via">${row.viability ?? '–'}</span></div>` +
+            (open ? `<div class="qol-us-detail">${usageDetailHtml(row, dex)}</div>` : '') +
+            '</li>';
+    }
+
+    // ---------- styling (neutral colours, so it works in light and dark themes) ----------
+
+    const USAGE_CSS = `
+.qol-us{max-width:1000px;margin:0 auto;padding:10px 12px 40px}
+.qol-us [hidden]{display:none!important}
+.qol-us h2{margin:4px 0 10px;font-size:18px}
+.qol-us-controls{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;margin-bottom:8px}
+.qol-us-controls label{display:flex;flex-direction:column;gap:2px;font-size:11px}
+.qol-us-controls label>span:first-child{opacity:.7}
+.qol-us-controls select,.qol-us-controls input{min-width:120px;box-sizing:border-box}
+.qol-us-sortgroup{display:flex;gap:4px}
+.qol-us-grow{flex:1 1 160px}
+.qol-us-grow input{width:100%}
+.qol-us-status{min-height:18px;margin:6px 0;font-size:12px}
+.qol-us-status.error{color:#c0392b}
+.qol-us-summary{margin:4px 0 8px;font-size:12px;opacity:.85}
+
+.qol-us-list{list-style:none;margin:0;padding:0;border-top:1px solid rgba(128,128,128,.3)}
+.qol-us-row{border-bottom:1px solid rgba(128,128,128,.22)}
+
+.qol-us-head,.qol-us-cols{display:grid;grid-template-columns:30px 40px minmax(0,1fr) 62px 84px 56px;align-items:center;gap:8px;box-sizing:border-box;width:100%;margin:0;padding:0 6px;color:inherit;font:inherit}
+.qol-us-head{min-height:30px;cursor:pointer}
+.qol-us-head:hover{background:rgba(128,128,128,.12)}
+.qol-us-row.open>.qol-us-head{background:rgba(128,128,128,.16)}
+.qol-us-cols{font-size:11px;opacity:.85;padding-bottom:3px}
+.qol-us-cols [data-sort]{cursor:pointer}
+.qol-us-cols [data-sort]:hover,.qol-us-cols .cur{font-weight:bold;opacity:1}
+
+.qol-us-rank{text-align:right;opacity:.6;font-size:11px}
+.qol-us-icon{width:40px;height:30px}
+.qol-us-name{min-width:0;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.qol-us-cols .qol-us-name{font-weight:normal}
+.qol-us-pct,.qol-us-raw,.qol-us-via{text-align:right}
+.qol-us-raw{opacity:.75}
+
+.qol-us-detail{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 18px;padding:8px 10px 12px 46px;background:rgba(128,128,128,.07)}
+.qol-us-dhead{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px}
+.qol-us-dhead img{vertical-align:middle}
+.qol-us-detail h4{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;border-bottom:1px solid rgba(128,128,128,.3)}
+.qol-us-li{display:flex;align-items:center;gap:6px;min-height:20px;padding:1px 4px;font-size:12px;border-radius:3px;
+  background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent var(--w,0%))}
+.qol-us-li[data-jump]{cursor:pointer}
+.qol-us-li[data-jump]:hover{outline:1px solid rgba(128,128,128,.5)}
+.qol-us-li-name{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.qol-us-li-name img{flex:none}
+.qol-us-li-name .picon{flex:none;margin:-6px -6px -6px -10px;transform:scale(.75)}
+.qol-us-li-val{flex:none;font-variant-numeric:tabular-nums;opacity:.9}
+.qol-us-li-val small{opacity:.65;margin-left:2px}
+.qol-us-empty{padding:14px;opacity:.7}
+
+@media (max-width:640px){
+  .qol-us-rank,.qol-us-raw{display:none}
+  .qol-us-head,.qol-us-cols{grid-template-columns:40px minmax(0,1fr) 54px 56px}
+  .qol-us-detail{padding-left:10px}
+}`;
+
+    function usageEnsureCss() {
+        if (document.getElementById('qol-usage-css')) return;
+        const style = document.createElement('style');
+        style.id = 'qol-usage-css';
+        style.textContent = USAGE_CSS;
+        document.head.appendChild(style);
+    }
+
+    // ---------- controller ----------
+
+    function createUsageController(root) {
+        const prefs = selfLoad(USAGE.PREFS) || {};
+        const S = {
+            months: [], month: null, formats: new Map(),
+            format: prefs.format || 'gen9ou',
+            baseline: Number.isFinite(prefs.baseline) ? prefs.baseline : null,
+            sort: USAGE_SORTS[prefs.sort] ? prefs.sort : 'usage',
+            desc: typeof prefs.desc === 'boolean' ? prefs.desc : true,
+            filter: '', data: null, open: new Set(), token: 0,
+        };
+
+        const $ = (selector) => root.querySelector(selector);
+        const save = () => selfSave(USAGE.PREFS, {format: S.format, baseline: S.baseline, sort: S.sort, desc: S.desc});
+
+        root.innerHTML =
+            '<div class="qol-us">' +
+            '<h2>Smogon Usage Statistics</h2>' +
+            '<div class="qol-us-controls">' +
+            '<label><span>Month</span><select class="button" data-ctl="month"></select></label>' +
+            '<label><span>Format</span><select class="button" data-ctl="format"></select></label>' +
+            '<label><span>Rating baseline</span><select class="button" data-ctl="baseline"></select></label>' +
+            '<label><span>Sort by</span><span class="qol-us-sortgroup">' +
+            '<select class="button" data-ctl="sort">' +
+            Object.entries(USAGE_SORTS).map(([k, s]) => `<option value="${k}">${s.label}</option>`).join('') +
+            '</select><button type="button" class="button" data-ctl="dir"></button></span></label>' +
+            '<label class="qol-us-grow"><span>Filter</span>' +
+
+            '</div>' +
+            '<div class="qol-us-status" data-out="status"></div>' +
+            '<div class="qol-us-summary" data-out="summary"></div>' +
+            '<div class="qol-us-cols" data-out="cols" hidden></div>' +
+            '<ul class="qol-us-list" data-out="list"></ul></div>';
+
+        const setStatus = (html, isError = false) => {
+            const el = $('[data-out=status]');
+            el.className = 'qol-us-status' + (isError ? ' error' : '');
+            el.innerHTML = html;
+        };
+
+        function showError(error) {
+            console.error(LOG, 'Usage stats failed:', error);
+            setStatus(
+                `Couldn’t load stats: ${usageEsc(error?.message || error)}. ` +
+                '<button type="button" class="button" data-act="retry">Retry</button><br>' +
+                '<small>smogon.com may have blocked the request, or this selection has no file.</small>',
+                true
+            );
+        }
+
+        // ----- selection helpers -----
+
+        function pickFormat() {
+            const ids = [...S.formats.keys()];
+            if (S.formats.has(S.format) || !ids.length) return;
+            S.format = ids.includes('gen9ou')
+                ? 'gen9ou'
+            : ids.sort((a, b) => usageGenOf(b) - usageGenOf(a) || a.localeCompare(b))[0];
+        }
+
+        function pickBaseline() {
+            const list = S.formats.get(S.format) || [];
+            if (list.includes(S.baseline)) return;
+            S.baseline = USAGE.BASELINE_PREFERENCE.find((b) => list.includes(b)) ?? list[Math.floor(list.length / 2)] ?? null;
+        }
+
+        // ----- controls -----
+
+        const option = (value, label, selected) =>
+        `<option value="${usageEsc(value)}"${selected ? ' selected' : ''}>${usageEsc(label)}</option>`;
+
+        function fillMonths() {
+            $('[data-ctl=month]').innerHTML = S.months.map((m) => option(m, usageMonthLabel(m), m === S.month)).join('');
+        }
+
+        function fillFormats() {
+            $('[data-ctl=format]').innerHTML = usageGroupFormats([...S.formats.keys()]).map((group) =>
+                                                                                            `<optgroup label="${group.gen ? 'Gen ' + group.gen : 'Other'}">` +
+                                                                                            group.items.map((f) => option(f.id, f.label, f.id === S.format)).join('') + '</optgroup>'
+                                                                                           ).join('');
+        }
+
+        function fillBaselines() {
+            $('[data-ctl=baseline]').innerHTML = (S.formats.get(S.format) || []).map((b) =>
+                                                                                     option(b, b === 0 ? '0 (all games)' : String(b), b === S.baseline)
+                                                                                    ).join('');
+        }
+
+        function syncSortControls() {
+            $('[data-ctl=sort]').value = S.sort;
+            const dir = $('[data-ctl=dir]');
+            dir.textContent = S.sort === 'name' ? (S.desc ? 'Z–A' : 'A–Z') : (S.desc ? '▼' : '▲');
+            dir.title = S.desc ? 'Descending (click to reverse)' : 'Ascending (click to reverse)';
+        }
+
+        // ----- list -----
+
+        function visibleRows() {
+            const q = toSearchId(S.filter);
+            let rows = S.data.rows;
+            if (q) rows = rows.filter((r) => r.id.includes(q));
+
+            const dir = S.desc ? -1 : 1;
+            const key = S.sort;
+            return rows.slice().sort((a, b) => {
+                if (key === 'name') return a.name.localeCompare(b.name) * dir;
+                const x = a[key];
+                const y = b[key];
+                if (x == null && y == null) return a.rank - b.rank;
+                if (x == null) return 1; // missing values always last
+                if (y == null) return -1;
+                return (x - y) * dir || a.rank - b.rank;
+            });
+        }
+
+        function renderSummary() {
+            const el = $('[data-out=summary]');
+            if (!S.data) { el.innerHTML = ''; return; }
+            const battles = Number(S.data.info['number of battles']);
+            el.innerHTML =
+                `<b>${usageEsc(usageFormatLabel(S.format))}</b> · ${usageEsc(usageMonthLabel(S.month))} · ` +
+                `baseline ${S.baseline} · ` +
+                (Number.isFinite(battles) ? `${battles.toLocaleString()} battles · ` : '');
+
+        }
+
+        function renderCols() {
+            const el = $('[data-out=cols]');
+            el.hidden = !S.data;
+            const col = (key, cls, label, title = '') =>
+            `<span class="${cls}${S.sort === key ? ' cur' : ''}" data-sort="${key}"` +
+                  `${title ? ` title="${usageEsc(title)}"` : ''}>${label}${S.sort === key ? (S.desc ? ' ▼' : ' ▲') : ''}</span>`;
+            el.innerHTML =
+                '<span class="qol-us-rank">#</span><span class="qol-us-icon"></span>' +
+                '<span class="qol-us-name"></span>' +
+                col('usage', 'qol-us-pct', 'Usage') + col('raw', 'qol-us-raw', 'Raw') +
+                col('viability', 'qol-us-via', 'Ceiling', 'Viability ceiling');
+        }
+
+        function renderList() {
+            const list = $('[data-out=list]');
+            if (!S.data) { list.innerHTML = ''; return; }
+            const rows = visibleRows();
+            const dex = usageDexFor(S.format);
+            list.innerHTML = rows.length
+                ? rows.map((r) => usageRowHtml(r, S.data.maxUsage, S.open.has(r.id), dex)).join('')
+            : '<li class="qol-us-empty">No Pokémon match that filter.</li>';
+        }
+
+        function renderAll() {
+            syncSortControls();
+            renderSummary();
+            renderCols();
+            renderList();
+        }
+
+        // ----- loading -----
+
+        async function loadData(token = ++S.token) {
+            save();
+            S.data = null;
+            renderAll();
+            setStatus(`Loading ${usageEsc(usageFormatLabel(S.format))}, ${usageEsc(usageMonthLabel(S.month))}… ` +
+                      '<small>(large files can take a few seconds)</small>');
+            try {
+                const data = await usageLoadDataset(S.month, S.format, S.baseline);
+                if (token !== S.token) return;
+                S.data = data;
+                S.open.clear();
+                setStatus('');
+                renderAll();
+            } catch (error) {
+                if (token === S.token) showError(error);
+            }
+        }
+
+        async function init() {
+            const token = ++S.token;
+            try {
+                setStatus('Loading available months…');
+                S.months = await usageMonths();
+                if (token !== S.token) return;
+
+                // The newest folder can exist before its files do, so fall back a few months.
+                for (const month of S.months.slice(0, 4)) {
+                    const formats = await usageFormats(month).catch(() => new Map());
+                    if (token !== S.token) return;
+                    if (formats.size) { S.month = month; S.formats = formats; break; }
+                }
+                if (!S.formats.size) throw new Error('No stats found in the latest months');
+
+                pickFormat();
+                pickBaseline();
+                fillMonths();
+                fillFormats();
+                fillBaselines();
+                await loadData(token);
+            } catch (error) {
+                if (token === S.token) showError(error);
+            }
+        }
+
+        async function changeMonth(month) {
+            const token = ++S.token;
+            try {
+                setStatus('Loading formats…');
+                const formats = await usageFormats(month);
+                if (token !== S.token) return;
+                S.month = month;
+                S.formats = formats;
+                pickFormat();
+                pickBaseline();
+                fillFormats();
+                fillBaselines();
+                await loadData(token);
+            } catch (error) {
+                if (token === S.token) showError(error);
+            }
+        }
+
+        // ----- interaction -----
+
+        function setSort(key) {
+            if (S.sort === key) S.desc = !S.desc;
+            else { S.sort = key; S.desc = key !== 'name'; }
+            save();
+            renderAll();
+        }
+
+        function toggleRow(id) {
+            const li = root.querySelector(`.qol-us-row[data-id="${id}"]`);
+            const row = S.data?.byId.get(id);
+            if (!li || !row) return;
+
+            const open = !S.open.has(id);
+            if (open) S.open.add(id); else S.open.delete(id);
+            li.classList.toggle('open', open);
+            li.querySelector('.qol-us-detail')?.remove();
+            if (open) {
+                li.insertAdjacentHTML('beforeend',
+                                      `<div class="qol-us-detail">${usageDetailHtml(row, usageDexFor(S.format))}</div>`);
+            }
+        }
+
+        function jumpTo(id) {
+            if (!S.data?.byId.has(id)) return;
+            S.filter = '';
+            $('[data-ctl=filter]').value = '';
+            S.open.add(id);
+            renderList();
+            root.querySelector(`.qol-us-row[data-id="${id}"]`)?.scrollIntoView({block: 'start', behavior: 'smooth'});
+        }
+
+        root.addEventListener('click', (e) => {
+            const target = e.target.closest?.('[data-act],[data-sort],[data-jump],[data-ctl=dir]');
+            if (!target || !root.contains(target)) return;
+
+            if (target.dataset.sort) setSort(target.dataset.sort);
+            else if (target.dataset.jump) jumpTo(target.dataset.jump);
+            else if (target.dataset.ctl === 'dir') { S.desc = !S.desc; save(); renderAll(); }
+            else if (target.dataset.act === 'toggle') toggleRow(target.dataset.id);
+            else if (target.dataset.act === 'retry') {
+                if (S.months.length) loadData(); else init();
+            }
+        });
+
+        root.addEventListener('change', (e) => {
+            const ctl = e.target?.dataset?.ctl;
+            const value = e.target?.value;
+            if (ctl === 'month') changeMonth(value);
+            else if (ctl === 'format') {
+                S.format = value;
+                pickBaseline();
+                fillBaselines();
+                loadData();
+            } else if (ctl === 'baseline') {
+                S.baseline = Number(value);
+                loadData();
+            } else if (ctl === 'sort') {
+                S.sort = value;
+                S.desc = value !== 'name';
+                save();
+                renderAll();
+            }
+        });
+
+        let filterTimer = null;
+        root.addEventListener('input', (e) => {
+            if (e.target?.dataset?.ctl !== 'filter') return;
+            clearTimeout(filterTimer);
+            filterTimer = setTimeout(() => { S.filter = e.target.value; renderList(); }, 120);
+        });
+
+        // Keep typing in the filter box from reaching the client's global hotkeys.
+        root.addEventListener('keydown', (e) => e.stopPropagation());
+
+        syncSortControls();
+        init();
+        return S;
+    }
+
+    // ---------- tab / overlay / button ----------
+
+    function mountUsageUi(host) {
+        const root = host instanceof Element ? host : host[0];
+        if (!root) return;
+        usageEnsureCss();
+        createUsageController(root);
+    }
+
+    // Last-resort UI if the client refuses to create a tab: a plain overlay.
+    function openUsageOverlay() {
+        let overlay = document.getElementById('qol-usage-overlay');
+        if (overlay) { overlay.hidden = false; return; }
+
+        overlay = document.createElement('div');
+        overlay.id = 'qol-usage-overlay';
+        overlay.style.cssText =
+            'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;' +
+            'align-items:center;justify-content:center;padding:2vh 2vw';
+
+        const panel = document.createElement('div');
+        panel.style.cssText =
+            'position:relative;width:min(1040px,100%);max-height:96vh;overflow:auto;border-radius:6px;' +
+            'background:Canvas;color:CanvasText;box-shadow:0 4px 24px rgba(0,0,0,.5)';
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'button';
+        close.textContent = 'Close';
+        close.style.cssText = 'position:sticky;top:6px;float:right;margin:6px;z-index:1';
+        close.addEventListener('click', () => { overlay.hidden = true; });
+
+        const body = document.createElement('div');
+        panel.append(close, body);
+        overlay.appendChild(panel);
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) overlay.hidden = true; });
+        document.body.appendChild(overlay);
+
+        mountUsageUi(body);
+    }
+
+    function mountUsageRoom(room) {
+        if (room.__qolUsageMounted) return;
+        room.__qolUsageMounted = true;
+        room.title = 'Stats';
+        room.minWidth = room.minWidth ?? 320;
+        room.maxWidth = room.maxWidth ?? 1024;
+        room.receive = function () {}; // nothing arrives from the server for this tab
+        room.$el.addClass('ps-room-light scrollable').empty();
+        mountUsageUi(room.$el);
+
+    }
+
+    function patchUsageRoomTraffic() {
+        if (!window.app) return false;
+        const id = USAGE.ROOM_ID;
+
+        // Never ask the server about our fake room.
+        patchMethod(window.app, 'send', '__qolUsageSendPatched', (original) =>
+                    function (data, ...rest) {
+            const rm = rest[0];
+            if ((typeof rm === 'string' ? rm : rm?.id) === id) return;
+            if (typeof data === 'string' && data.includes(id)) {
+                if (!/^\/autojoin\b/i.test(data)) return; // /join, /leave, etc.
+                const kept = data.slice(9).split(',').map((r) => r.trim()).filter((r) => r && !r.includes(id));
+                if (!kept.length) return;
+                data = '/autojoin ' + kept.join(',');
+            }
+            return original.call(this, data, ...rest);
+        }
+                   );
+
+        // Swallow the "not found" reply if one still slips through.
+        patchMethod(window.app, 'receive', '__qolUsageReceivePatched', (original) =>
+                    function (data) {
+            if (typeof data === 'string' && data.includes(id)) {
+                const lines = data.split('\n');
+                const ours = lines[0] === '>' + id;
+                const kept = lines.filter((l, i) =>
+                                          ours ? (i === 0 || !l.startsWith('|noinit|'))
+                                          : !(l.includes(id) && /^\|(popup|noinit|error)\|/.test(l)));
+                if (ours && kept.length <= 1) return;
+                if (!kept.length || (kept.length === 1 && !kept[0].trim())) return;
+                data = kept.join('\n');
+            }
+            return original.call(this, data);
+        }
+                   );
+
+        // If the client re-created the tab on reload, fill it in.
+        const room = window.app.rooms?.[id];
+        if (room?.$el && !room.__qolUsageMounted) mountUsageRoom(room);
+        return true;
+    }
+
+    function openUsageStatsTab() {
+        if (!window.app) return;
+        const id = USAGE.ROOM_ID;
+        let room = app.rooms?.[id];
+
+        if (!room) {
+            try {
+                // 'html' rooms are the client's generic content tabs; nojoin = don't ask the server.
+                room = app.addRoom(id, 'html', true, 'Stats') || app.rooms?.[id];
+            } catch (error) {
+                console.warn(LOG, 'Could not create a Stats tab, using an overlay instead:', error);
+                room = null;
+            }
+
+            if (room?.$el) mountUsageRoom(room);
+        }
+
+        if (room) app.focusRoom(id);
+        else openUsageOverlay();
+    }
+
+    function usageCleanUrl() {
+        const id = USAGE.ROOM_ID;
+        if (!location.pathname.includes(id) && !location.hash.includes(id)) return;
+        const path = location.pathname.replace(id, '').replace(/\/{2,}/g, '/') || '/';
+        history.replaceState(history.state, '', path + location.search);
+    }
+
+    function installUsageStatsButton() {
+        if (IS_DAMAGE_CALC) return;
+
+        const tournaments = document.querySelector('.menugroup button[value="/smogtours"]');
+        const group = tournaments?.closest('.menugroup');
+        if (!group || group.querySelector('#qol-usage-stats')) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = 'qol-usage-stats';
+        button.className = 'button mainmenu4'; // same look as Tournaments
+        button.style.cursor = 'pointer';
+        button.textContent = 'Stats';
+        button.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { openUsageStatsTab(); } catch (err) { console.error(LOG, 'Stats tab failed:', err); }
+        });
+
+        const row = document.createElement('p');
+        row.appendChild(button);
+        const after = group.querySelector('#qol-self-challenge')?.closest('p') || tournaments.closest('p');
         if (after) after.after(row); else group.appendChild(row);
     }
 
@@ -6779,6 +7651,7 @@
             // server messages + banlists
             patchServerReceive(),
             patchTsaSearchLegality(),
+            patchUsageRoomTraffic(),
 
             // search: results (legality, banlists, natdex, filters)
             patchPokemonSearchResults(),
@@ -6891,6 +7764,9 @@
     }
 
     patchLoop();
+    usageCleanUrl();
+    window.addEventListener('beforeunload', usageCleanUrl);
+    window.addEventListener('pagehide', usageCleanUrl);
     installNatureSwapCamomonsListener();
     installStoneSortListener();
     installMnmSpeedNoteListener();
