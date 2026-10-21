@@ -1,30 +1,30 @@
 // ==UserScript==
-// @name Pokémon Showdown Teambuilder QOL
-// @author jl
-// @namespace https://github.com/Jake18236/showdown-teambuilder-mod
-// @version 13.0.0
-// @description Adds Teambuilder and damage calculator support for some OMs
-// @match https://play.pokemonshowdown.com/*
-// @match https://smogtours.psim.us/*
-// @match https://calc.pokemonshowdown.com/*
-// @grant none
-// @run-at document-start
-// @updateURL https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js
-// @downloadURL https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js
+// @name         Pokémon Showdown Teambuilder QOL
+// @author       jl
+// @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
+// @version      13.5.0
+// @description  Adds Teambuilder and damage calculator support for some OMs
+// @match        https://play.pokemonshowdown.com/*
+// @match        https://smogtours.psim.us/*
+// @match        https://calc.pokemonshowdown.com/*
+// @grant        none
+// @run-at       document-start
+// @updateURL    https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js
+// @downloadURL  https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js
 // ==/UserScript==
 
 // comments by claude bc documentation is too much work :C
 //
 // FILE LAYOUT
-// 1. Constants & utilities 10. Alphabet Cup / National Dex movepool
-// 2. Room helpers 11. Godly Gift
-// 3. Patch helpers 12. Ability & move search providers
-// 4. Search-result helpers 13. Pokémon search filters
-// 5. Server banlists 14. Move search filters
-// 6. Per-mod stat modifiers 15. Search engine dispatch
-// 7. Types / Nature Swap / Camomons 16. Search UI (sort, rows, chips)
-// 8. Mix and Mega 17. Teambuilder patches
-// 9. Fusions (CE / FF / Inherit.) 18. Battle patches, DOM decorators, boot
+//   1. Constants & utilities          10. Alphabet Cup / National Dex movepool
+//   2. Room helpers                   11. Godly Gift
+//   3. Patch helpers                  12. Ability & move search providers
+//   4. Search-result helpers          13. Pokémon search filters
+//   5. Server banlists                14. Move search filters
+//   6. Per-mod stat modifiers         15. Search engine dispatch
+//   7. Types / Nature Swap / Camomons 16. Search UI (sort, rows, chips)
+//   8. Mix and Mega                   17. Teambuilder patches
+//   9. Fusions (CE / FF / Inherit.)   18. Battle patches, DOM decorators, boot
 (function () {
     'use strict';
 
@@ -57,6 +57,7 @@
         SCALEMONS: 'scalemons',
         FRANTIC_FUSIONS: 'franticFusions',
         INHERITANCE: 'inheritance',
+        REEVOLUTION: 'reevolution',
         FLIPPED: 'flipped',
         THREE_FIFTY_CUP: 'threeFiftyCup',
         NATURE_SWAP: 'natureSwap',
@@ -91,14 +92,16 @@
     fmtHas(format, 'mixandmega') && !isNationalDexFormat(format);
 
     const FORMAT_MOD_KEYWORDS = [
-        ['tiershift', MOD.TIER_SHIFT], // also covers tiershiftaaa
-        ['mixandmega', MOD.MIX_AND_MEGA], // covers gen9nationaldexmixandmega
+        ['tiershift', MOD.TIER_SHIFT],      // also covers tiershiftaaa
+        ['mixandmega', MOD.MIX_AND_MEGA],   // covers gen9nationaldexmixandmega
         ['badnboosted', MOD.BAD_N_BOOSTED],
         ['crossevolution', MOD.CROSS_EVOLUTION],
-        ['aaaubers', MOD.SCALEMONS], // Scalemons runs on gen9aaaubers
+        ['aaaubers', MOD.SCALEMONS],        // Scalemons runs on gen9aaaubers
         ['scalemons', MOD.SCALEMONS],
         ['franticfusions', MOD.FRANTIC_FUSIONS],
         ['inheritance', MOD.INHERITANCE],
+        ['reevolution', MOD.REEVOLUTION],
+        ['reevolutionmod', MOD.REEVOLUTION],
         ['flipped', MOD.FLIPPED],
         ['350cup', MOD.THREE_FIFTY_CUP],
         ['natureswap', MOD.NATURE_SWAP],
@@ -147,8 +150,8 @@
     //
     // A team's format can carry custom rules ("gen9ou@@@badnboostedmod, flippedmod"), which is how
     // OMs are stacked (see "Import format"). The active mods are an ordered list, applied first to last:
-    // 1. the base format's own mod(s)
-    // 2. mod rules from the "@@@" custom rules, in the order written
+    //   1. the base format's own mod(s)
+    //   2. mod rules from the "@@@" custom rules, in the order written
 
     const asMods = (m) => (Array.isArray(m) ? m : m ? [m] : []);
 
@@ -494,8 +497,8 @@
     //
     // Banlists live server-side only, so we ask via a silent `/tier` command
     // and parse the `/raw` reply (which is then hidden from chat).
-    // - Named lists: Tier Shift AAA, Godly Gift, Convergence
-    // - Generic: every other format (species / tier bans only)
+    //   - Named lists: Tier Shift AAA, Godly Gift, Convergence
+    //   - Generic: every other format (species / tier bans only)
     // ====================================================================
 
     const BL = {
@@ -601,8 +604,8 @@
             restricted: new Set(),
             restrictedBase: new Set(),
             restrictedAbilities: new Set(), // "*Comatose": only usable by Pokémon that natively have it
-            abilityCombos: new Set(), // "-Regenerator + Wimp Out": can't have both
-            ruleset: [], // the format's own rules, in order ("!Obtainable Abilities"...)
+            abilityCombos: new Set(),       // "-Regenerator + Wimp Out": can't have both
+            ruleset: [],                    // the format's own rules, in order ("!Obtainable Abilities"...)
         };
         let sawNonSpeciesBan = false;
 
@@ -1089,7 +1092,22 @@
         if (!boost) return null;
 
         const stats = copy(from);
-        for (const stat of BOOSTABLE_STATS) stats[stat] += boost;
+        for (const stat of BOOSTABLE_STATS) stats[stat] = clamp255(stats[stat] + boost);
+        return stats;
+    }
+
+    // Re-Evolution: double the stat difference between this species and its
+    // immediately previous evolution stage. Species without a previous stage
+    // are unchanged. Base stats are capped at 255, as in the OM.
+    function reevolutionModifiedStats(species, from = species?.baseStats) {
+        if (!species?.baseStats || !from || !species.prevo) return null;
+        const dex = window.Dex || (typeof Dex !== 'undefined' ? Dex : null);
+        const prevo = dex?.species?.get?.(species.prevo);
+        if (!prevo?.exists || !prevo.baseStats || prevo.battleOnly) return null;
+        const stats = copy(from);
+        for (const stat of STATS) {
+            stats[stat] = clamp255(stats[stat] + species.baseStats[stat] - prevo.baseStats[stat]);
+        }
         return stats;
     }
 
@@ -1138,6 +1156,7 @@
         [MOD.SCALEMONS]: scalemonsModifiedStats,
         [MOD.FLIPPED]: flippedModifiedStats,
         [MOD.THREE_FIFTY_CUP]: threeFiftyCupModifiedStats,
+        [MOD.REEVOLUTION]: reevolutionModifiedStats,
     };
 
     // Species-only mods in `mods`, applied in order. Null if none of them applies.
@@ -1179,6 +1198,7 @@
         [MOD.GODLY_GIFT]: (from, {room, set}) => godlyGiftBaseStats(room, set, from),
         [MOD.CROSS_EVOLUTION]: (from, {dex, set}) => crossEvolutionBaseStats(dex, set, from),
         [MOD.FRANTIC_FUSIONS]: (from, {dex, set}) => franticFusionsBaseStats(dex, set, from),
+        [MOD.REEVOLUTION]: (from, {dex, set}) => reevolutionModifiedStats(dex?.species?.get(set?.species), from),
         [MOD.NATURE_SWAP]: (from, {dex, set}) => natureSwapBaseStats(dex, set, from),
     };
     for (const mod of Object.keys(SPECIES_STAT_MODIFIERS)) {
@@ -1252,21 +1272,29 @@
         return [...new Set([t1, t2].filter(Boolean))]; // same type -> mono
     }
 
-    // Apply type changes in battle-rule order: Cross Evolution, Mix and Mega,
-    // then Camomons. Camomons move-based typing overrides all earlier changes.
+    // Camomons supplies the typing when active. Its move-based typing overrides
+    // Mix and Mega's additional stone typing, even when both mods are combined.
     // Accepts a single mod or the whole list. Null if no mod touches types.
     function modifiedTypes(mods, dex, set) {
         let types = null;
-        const activeMods = asMods(mods);
-        if (activeMods.includes(MOD.CROSS_EVOLUTION)) {
-            types = crossEvolutionTypes(dex, set, types);
-        }
-        if (activeMods.includes(MOD.MIX_AND_MEGA)) {
-            const next = mixAndMegaModifiedTypes(dex, set, types);
+        let hasMixAndMega = false;
+        let hasCamomons = false;
+        for (const mod of asMods(mods)) {
+            let next = null;
+            if (mod === MOD.MIX_AND_MEGA) {
+                hasMixAndMega = true;
+                continue;
+            }
+            else if (mod === MOD.CROSS_EVOLUTION) next = crossEvolutionTypes(dex, set, types);
+            else if (mod === MOD.CAMOMONS) {
+                hasCamomons = true;
+                next = camomonsTypes(dex, set);
+            }
             if (next) types = next;
         }
-        if (activeMods.includes(MOD.CAMOMONS)) {
-            types = camomonsTypes(dex, set);
+        if (hasMixAndMega && !hasCamomons) {
+            const next = mixAndMegaModifiedTypes(dex, set, types);
+            if (next) types = next;
         }
         return types;
     }
@@ -1529,7 +1557,7 @@
 
     // ====================================================================
     // 9. FUSIONS: CROSS EVOLUTION / FRANTIC FUSIONS / INHERITANCE
-    // (nickname = the donor / evolution target)
+    //    (nickname = the donor / evolution target)
     // ====================================================================
 
     // Frantic Fusions + Inheritance: any species can fuse with any other
@@ -2976,8 +3004,8 @@
     }
 
     // ---------- Pokémon search results: one getResults wrapper ----------
-    // before: remember into/from chips, widen pool for "natdex"
-    // after: apply server banlist, then Godly Gift legality
+    //   before: remember into/from chips, widen pool for "natdex"
+    //   after:  apply server banlist, then Godly Gift legality
 
     // Moves rows matching `isBanned` into the "Illegal results" section (created if the
     // native one doesn't exist) and records why, so they stay visible but greyed out.
@@ -4123,8 +4151,8 @@
                 const mods = modsForSearch(this);
                 const tmp = {...(this.set || room?.curSet || {}), species, item: item.id};
                 const stats = isMnmStoneItem(this.dex, item)
-                ? computeModsBaseStats(mods, {dex: this.dex, set: tmp, room})
-                : null;
+                    ? computeModsBaseStats(mods, {dex: this.dex, set: tmp, room})
+                    : null;
                 if (!stats) { otherRows.push({row}); continue; }
                 stoneRows.push({
                     row, stats,
@@ -4253,7 +4281,7 @@
             const engine = room?.search?.engine;
             if (!engine || engine.typedSearch?.searchType !== 'item') return;
 
-            e.preventDefault(); // keep focus in the search box
+            e.preventDefault();            // keep focus in the search box
             e.stopImmediatePropagation();
 
             const col = btn.dataset.qolSort;
@@ -4643,12 +4671,8 @@
                     text + ' <i class="fa fa-times-circle"></i></button> ';
             });
 
-            const clearAll = this.filters.length > 1
-            ? '<button type="button" class="qol-clearfilters" style="margin-left:4px;font-size:11px;cursor:pointer">' +
-                  'Clear all <i class="fa fa-times-circle"></i></button> '
-            : '';
 
-            return '<p>Filters: ' + buttons.join('') + clearAll +
+            return '<p>Filters: ' + buttons.join('') +
                 (q ? '' : '<small style="color: #888">(backspace = delete filter)</small>') + '</p>';
         }
                           );
@@ -4789,8 +4813,8 @@
 
 
     // Everything that reacts to a chooser pick:
-    // - fusion mods: apply the "into" / "X into" nickname
-    // - Camomons / Mix and Mega: live-refresh the type icons
+    //   - fusion mods: apply the "into" / "X into" nickname
+    //   - Camomons / Mix and Mega: live-refresh the type icons
     // Rebuilds the chooser that is currently open (what clicking away and back does).
     function rebuildOpenChooser(room) {
         const engine = room?.search?.engine;
@@ -5047,7 +5071,8 @@
 
     // Mods the in-battle EV/nature guesser knows how to apply.
     const BATTLE_GUESSER_MODS = new Set([
-        MOD.TIER_SHIFT, MOD.SCALEMONS, MOD.FLIPPED, MOD.THREE_FIFTY_CUP, MOD.FRANTIC_FUSIONS, MOD.NATURE_SWAP,
+        MOD.TIER_SHIFT, MOD.SCALEMONS, MOD.FLIPPED, MOD.THREE_FIFTY_CUP,
+        MOD.FRANTIC_FUSIONS, MOD.NATURE_SWAP, MOD.REEVOLUTION,
     ]);
 
     function patchBattleStatGuesserGetStat() {
@@ -5292,8 +5317,10 @@
         ['self challenge button', installSelfChallengeButton],
         ['import format button', installImportFormatButton],
         ['custom format names', decorateCustomFormatNames],
+        ['imported format picker', decorateImportedFormatPicker],
+        ['manage imported formats button', installImportedFormatsButton],
+        ['imported format selection', installImportedFormatClick],
         ['usage stats button', installUsageStatsButton],
-        ['custom format names', decorateCustomFormatNames],
         ['custom format dropdown', decorateCustomFormatDropdown],
     ];
 
@@ -5324,8 +5351,8 @@
 
     // ====================================================================
     // SELF CHALLENGE
-    // Main account challenges a throwaway guest over a 2nd WebSocket and
-    // you choose for both sides. Session is persisted so a reload resumes.
+    //   Main account challenges a throwaway guest over a 2nd WebSocket and
+    //   you choose for both sides. Session is persisted so a reload resumes.
     // ====================================================================
 
     const SELF = {
@@ -5573,7 +5600,7 @@
         // ---- guest P2 ----
         async function onGuestMessage(ws, s) {
             if (S.stopping) console.log('[self] guest reply while stopping:', s.slice(0, 300));
-            // Surface the guest's own errors (e.g. "Your team was rejected...") on the main client.
+                        // Surface the guest's own errors (e.g. "Your team was rejected...") on the main client.
             if (!s.startsWith('>')) {
                 const popup = s.split('\n').find((l) => l.startsWith('|popup|'));
                 if (popup) {
@@ -5704,7 +5731,7 @@
         }
         runSelfSession({
             ...cfg,
-            wantName: `BotMan${Math.floor(Math.random() * 90000 + 10000)}`,
+            wantName: `QolB${Math.floor(Math.random() * 90000 + 10000)}`,
             roomid: null,
         });
     }
@@ -5891,19 +5918,19 @@
 
     // ====================================================================
     // IMPORT FORMAT
-    // Paste "/challenge <format> @@@ <rules>" (or "<format>@@@<rules>", or just rules) and the
-    // open team's format becomes that custom-rules format.
-    // - mods come from the rule names ("badnboostedmod" ...)
-    // - "-X" bans, "+X" unbans and "*X" restricts on top of the base format's own banlist
-    // (see getMergedBans), so Godly Gift's gods include your "*" Pokémon
-    // Saving and exporting are the normal client's job: it is just a format string.
+    //   Paste "/challenge <format> @@@ <rules>" (or "<format>@@@<rules>", or just rules) and the
+    //   open team's format becomes that custom-rules format.
+    //     - mods come from the rule names ("badnboostedmod" ...)
+    //     - "-X" bans, "+X" unbans and "*X" restricts on top of the base format's own banlist
+    //       (see getMergedBans), so Godly Gift's gods include your "*" Pokémon
+    //   Saving and exporting are the normal client's job: it is just a format string.
     // ====================================================================
 
     const MOD_LABELS = {
         [MOD.TIER_SHIFT]: 'Tier Shift', [MOD.MIX_AND_MEGA]: 'Mix and Mega',
         [MOD.BAD_N_BOOSTED]: 'Bad \u2019n Boosted', [MOD.CROSS_EVOLUTION]: 'Cross Evolution',
         [MOD.SCALEMONS]: 'Scalemons', [MOD.FRANTIC_FUSIONS]: 'Frantic Fusions',
-        [MOD.INHERITANCE]: 'Inheritance', [MOD.FLIPPED]: 'Flipped', [MOD.THREE_FIFTY_CUP]: '350 Cup',
+        [MOD.INHERITANCE]: 'Inheritance', [MOD.REEVOLUTION]: 'Re-Evolution', [MOD.FLIPPED]: 'Flipped', [MOD.THREE_FIFTY_CUP]: '350 Cup',
         [MOD.NATURE_SWAP]: 'Nature Swap', [MOD.CAMOMONS]: 'Camomons', [MOD.CONVERGENCE]: 'Convergence',
         [MOD.FORTEMONS]: 'Fortemons',
         [MOD.SKETCHMONS]: 'Sketchmons',
@@ -5915,6 +5942,9 @@
     const squash = (text) => String(text || '').replace(/\s+/g, ' ').trim();
 
     const CUSTOM_FORMAT_LABELS_KEY = 'qol-custom-format-labels';
+    const HIDDEN_IMPORTED_FORMATS_KEY = 'qol-hidden-imported-formats';
+    const DELETED_IMPORTED_FORMATS_KEY = 'qol-deleted-imported-formats';
+    const ULTRA_MIX_FORMAT = 'gen9ultramixandmega';
     function customFormatLabelKey(format) {
         const [base, rules] = String(format || '').split('@@@');
         if (!rules) return '';
@@ -5941,6 +5971,84 @@
         else delete labels[key];
         try { localStorage.setItem(CUSTOM_FORMAT_LABELS_KEY, JSON.stringify(labels)); }
         catch (e) { console.warn(LOG, 'Could not save custom format name:', e); }
+        if (clean) {
+            const hidden = getHiddenImportedFormatKeys().filter((entry) => entry !== key);
+            try { localStorage.setItem(HIDDEN_IMPORTED_FORMATS_KEY, JSON.stringify(hidden)); }
+            catch (e) { console.warn(LOG, 'Could not restore imported format:', e); }
+            const deleted = getDeletedImportedFormatKeys().filter((entry) => entry !== key);
+            try { localStorage.setItem(DELETED_IMPORTED_FORMATS_KEY, JSON.stringify(deleted)); }
+            catch (e) { console.warn(LOG, 'Could not restore imported format:', e); }
+        }
+    }
+
+    function getHiddenImportedFormatKeys() {
+        try {
+            const keys = JSON.parse(localStorage.getItem(HIDDEN_IMPORTED_FORMATS_KEY) || '[]');
+            return Array.isArray(keys) ? keys.filter((key) => typeof key === 'string') : [];
+        } catch (e) { return []; }
+    }
+
+    function getDeletedImportedFormatKeys() {
+        try {
+            const keys = JSON.parse(localStorage.getItem(DELETED_IMPORTED_FORMATS_KEY) || '[]');
+            return Array.isArray(keys) ? keys.filter((key) => typeof key === 'string') : [];
+        } catch (e) { return []; }
+    }
+
+    function importedFormatKey(format) {
+        return customFormatLabelKey(format) || String(format || '').trim();
+    }
+
+    function importedCustomFormats({includeHidden = false} = {}) {
+        const hidden = new Set(getHiddenImportedFormatKeys());
+        const deleted = new Set(getDeletedImportedFormatKeys());
+        const byKey = new Map();
+        for (const [format, label] of Object.entries(getCustomFormatLabels())) {
+            const key = importedFormatKey(format);
+            if (!key || deleted.has(key)) continue;
+            byKey.set(key, {format, key, label: squash(label), hidden: hidden.has(key)});
+        }
+        for (const team of window.Storage?.teams || []) {
+            const format = String(team?.format || '');
+            const key = customFormatLabelKey(format);
+            if (!key || deleted.has(key) || byKey.has(key)) continue;
+            byKey.set(key, {format: key, key, label: displayFormatName(key), hidden: hidden.has(key)});
+        }
+        const hasNamedUltraMix = [...byKey.values()].some((entry) => toSearchId(entry.label) === 'ultramix');
+        if (!deleted.has(ULTRA_MIX_FORMAT) && !byKey.has(ULTRA_MIX_FORMAT) && !hasNamedUltraMix) byKey.set(ULTRA_MIX_FORMAT, {
+            format: ULTRA_MIX_FORMAT, key: ULTRA_MIX_FORMAT, label: 'Ultra Mix', hidden: hidden.has(ULTRA_MIX_FORMAT),
+        });
+        return [...byKey.values()]
+            .filter((entry) => entry.label && (includeHidden || !entry.hidden))
+            .sort((a, b) => a.label.localeCompare(b.label) || a.format.localeCompare(b.format));
+    }
+
+    function setImportedFormatHidden(format, hidden) {
+        const key = importedFormatKey(format);
+        if (!key) return;
+        const keys = new Set(getHiddenImportedFormatKeys());
+        if (hidden) keys.add(key); else keys.delete(key);
+        try { localStorage.setItem(HIDDEN_IMPORTED_FORMATS_KEY, JSON.stringify([...keys])); }
+        catch (e) { console.warn(LOG, 'Could not update format visibility:', e); }
+    }
+
+    function removeImportedCustomFormat(format) {
+        const key = customFormatLabelKey(format);
+        if (!key) return false;
+        const labels = getCustomFormatLabels();
+        const hidden = new Set(getHiddenImportedFormatKeys());
+        const deleted = new Set(getDeletedImportedFormatKeys());
+        if (!(key in labels) && deleted.has(key)) return false;
+        delete labels[key];
+        try { localStorage.setItem(CUSTOM_FORMAT_LABELS_KEY, JSON.stringify(labels)); }
+        catch (e) { console.warn(LOG, 'Could not remove custom format name:', e); return false; }
+        hidden.add(key);
+        deleted.add(key);
+        try {
+            localStorage.setItem(HIDDEN_IMPORTED_FORMATS_KEY, JSON.stringify([...hidden]));
+            localStorage.setItem(DELETED_IMPORTED_FORMATS_KEY, JSON.stringify([...deleted]));
+        } catch (e) { console.warn(LOG, 'Could not remove imported format:', e); return false; }
+        return true;
     }
 
     // Showdown's packed-team storage uses `format]name|team`. A custom-rule
@@ -5957,7 +6065,7 @@
         if (!text.includes('@@@') || (!text.includes(']') && !text.includes('|'))) return format;
         try {
             const encoded = btoa(unescape(encodeURIComponent(text)))
-            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+                .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
             return STORED_CUSTOM_FORMAT_PREFIX + encoded;
         } catch (e) {
             return format;
@@ -5967,7 +6075,7 @@
         if (!String(format || '').startsWith(STORED_CUSTOM_FORMAT_PREFIX)) return format;
         try {
             const encoded = String(format).slice(STORED_CUSTOM_FORMAT_PREFIX.length)
-            .replace(/-/g, '+').replace(/_/g, '/');
+                .replace(/-/g, '+').replace(/_/g, '/');
             const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
             return decodeURIComponent(escape(atob(padded)));
         } catch (e) {
@@ -6017,26 +6125,26 @@
         const storage = window.Storage;
         if (!storage) return false;
         const packed = patchMethod(storage, 'packAllTeams', '__qolSafeCustomFormatPack', (original) =>
-                                   function (teams) {
-            const safeTeams = (teams || []).map((team) => team?.format?.includes('@@@')
-                                                ? {...team, format: encodeStoredCustomFormat(team.format)}
-                                                : team);
-            return original.call(this, safeTeams);
-        });
+            function (teams) {
+                const safeTeams = (teams || []).map((team) => team?.format?.includes('@@@')
+                    ? {...team, format: encodeStoredCustomFormat(team.format)}
+                    : team);
+                return original.call(this, safeTeams);
+            });
         const unpacked = patchMethod(storage, 'unpackAllTeams', '__qolSafeCustomFormatUnpack', (original) =>
-                                     function (...args) {
-            const teams = original.apply(this, args);
-            if (!Array.isArray(teams)) return teams;
-            for (const team of teams) {
-                if (!team) continue;
-                const decoded = decodeStoredCustomFormat(team.format);
-                if (decoded !== team.format) {
-                    team.format = decoded;
-                    team.gen = Number(String(decoded).match(/^gen(\d+)/i)?.[1]) || team.gen || 9;
+            function (...args) {
+                const teams = original.apply(this, args);
+                if (!Array.isArray(teams)) return teams;
+                for (const team of teams) {
+                    if (!team) continue;
+                    const decoded = decodeStoredCustomFormat(team.format);
+                    if (decoded !== team.format) {
+                        team.format = decoded;
+                        team.gen = Number(String(decoded).match(/^gen(\d+)/i)?.[1]) || team.gen || 9;
+                    }
                 }
-            }
-            return teams;
-        });
+                return teams;
+            });
         // Storage may have unpacked its teams before this patch was installed.
         // Decode legacy tokens in the live array too, especially after a script
         // update where the unpack hook can otherwise miss the first load.
@@ -6079,6 +6187,238 @@
         const baseKey = resolveFormatKey(base) || base;
         const name = String(window.BattleFormats?.[baseKey]?.name || baseKey).replace(/^\[Gen \d+\]\s*/i, '');
         return rules && rules.trim() ? getCustomFormatLabel(format) || name + ' + Custom' : name;
+    }
+
+    function decorateImportedFormatPicker() {
+        if (IS_DAMAGE_CALC) return;
+        const dropdown = window.app?.rooms?.formatdropdown || Object.values(window.app?.rooms || {}).find((room) =>
+            room?.id === 'formatdropdown' || room?.el?.querySelector?.('.options-column')
+        );
+        // Showdown renders the format picker as a global popup, not an app room,
+        // so on current clients there is no `rooms.formatdropdown` to inspect.
+        const root = dropdown?.el || document.querySelector('.popupmenu');
+        if (!root) return;
+        // The format dropdown is shared and its parentElem shape differs between
+        // Showdown client builds, so don't gate these rows on that wrapper.
+        const formats = importedCustomFormats();
+        const query = toSearchId(root.querySelector('input[name="search"]')?.value || '');
+        const visibleFormats = formats
+            .filter((entry) => !query || toSearchId(entry.label).includes(query));
+        const findChallengeable = (container) => {
+            const title = [...container.querySelectorAll('summary, button, h2, h3, [role="heading"]')]
+                .find((el) => el.textContent.trim() === 'Challengeable OMs');
+            return title?.closest('details, [role="group"], .format-section') || title?.parentElement || null;
+        };
+        let challengeable = findChallengeable(root) || findChallengeable(document);
+        const host = root.querySelector('.options-column') || root.querySelector('.pad');
+        if (!challengeable && host) {
+            challengeable = document.createElement('details');
+            challengeable.className = 'details qol-challengeable-oms';
+            challengeable.open = true;
+            const summary = document.createElement('summary');
+            summary.textContent = 'Challengeable OMs';
+            challengeable.appendChild(summary);
+            host.appendChild(challengeable);
+        }
+        if (!challengeable) return;
+        challengeable.querySelectorAll('.qol-challengeable-format, .qol-challengeable-om-ultramix')
+            .forEach((button) => {
+                const li = button.closest('li');
+                if (li) li.remove(); else button.remove();
+            });
+        document.querySelectorAll('.qol-imported-oms').forEach((section) => section.remove());
+        const nativeButton = challengeable.querySelector('button[name="selectFormat"]');
+    }
+
+    const IMPORT_FORMATS_ROOM_ID = 'qol-import-formats';
+    function challengeTextForFormat(format) {
+        const [base, rules = ''] = String(format || '').split('@@@');
+        return `/challenge ${base}${rules.trim() ? ' @@@ ' + rules : ''}`;
+    }
+
+    function updateImportedFormat(oldFormat, newFormat, label) {
+        const oldKey = importedFormatKey(oldFormat);
+        const newKey = importedFormatKey(newFormat);
+        const labels = getCustomFormatLabels();
+        const hidden = new Set(getHiddenImportedFormatKeys());
+        const deleted = new Set(getDeletedImportedFormatKeys());
+        const wasHidden = hidden.has(oldKey);
+        delete labels[oldKey];
+        labels[newFormat] = squash(label);
+        hidden.delete(oldKey);
+        deleted.delete(oldKey);
+        if (wasHidden) hidden.add(newKey); else hidden.delete(newKey);
+        deleted.delete(newKey);
+        for (const team of window.Storage?.teams || []) {
+            if (team && (team.format === oldFormat || customFormatLabelKey(team.format) === oldKey)) {
+                team.format = newFormat;
+            }
+        }
+        const room = getTeambuilderRoom();
+        if (room?.curTeam?.format === oldFormat) room.curTeam.format = newFormat;
+        try {
+            localStorage.setItem(CUSTOM_FORMAT_LABELS_KEY, JSON.stringify(labels));
+            localStorage.setItem(HIDDEN_IMPORTED_FORMATS_KEY, JSON.stringify([...hidden]));
+            localStorage.setItem(DELETED_IMPORTED_FORMATS_KEY, JSON.stringify([...deleted]));
+            window.Storage?.saveTeams?.();
+            room?.save?.();
+        } catch (e) { console.warn(LOG, 'Could not update imported format:', e); }
+    }
+
+    function renderImportedFormatsRoom(room) {
+        if (!room?.$el) return;
+        room.title = 'Import Formats';
+        room.receive = function () {};
+        room.$el.addClass('ps-room-light scrollable').empty();
+        let formats = importedCustomFormats({includeHidden: true});
+        if (formats.some((entry) => entry.format !== ULTRA_MIX_FORMAT && toSearchId(entry.label) === 'ultramix')) {
+            formats = formats.filter((entry) => entry.format !== ULTRA_MIX_FORMAT);
+        }
+        const rows = formats.map((entry) => {
+            const name = selfEsc(entry.label);
+            const code = selfEsc(challengeTextForFormat(entry.format));
+            return `<li class="qol-import-format-row" data-format="${selfEsc(entry.format)}" ` +
+                `style="padding:12px 10px;border-bottom:1px solid #aaa">` +
+                `<div class="qol-import-format-heading"><strong>Format: ${name}</strong></div>` +
+                `<details style="margin:6px 0"><summary>Rules</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${code}</pre></details>` +
+                `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">` +
+                `<button type="button" class="button" data-qol-import-edit="${selfEsc(entry.format)}">Edit</button>` +
+                `<button type="button" class="button" data-qol-import-delete="${selfEsc(entry.format)}">Delete</button>` +
+                `<button type="button" class="button" data-qol-import-visibility="${selfEsc(entry.format)}">${entry.hidden ? 'Show' : 'Hide'}</button></div>` +
+                `<div class="qol-import-edit-form" hidden style="margin-top:10px">` +
+                `<label style="display:block;margin:6px 0">Format name <input class="textbox" data-qol-edit-name value="${name}" style="width:100%"></label>` +
+                `<label style="display:block;margin:6px 0">Challenge code <textarea class="textbox" data-qol-edit-code rows="4" style="width:100%">${code}</textarea></label>` +
+                `<button type="button" class="button" data-qol-import-save="${selfEsc(entry.format)}">Save</button> ` +
+                `<button type="button" class="button" data-qol-import-cancel>Cancel</button></div></li>`;
+        }).join('');
+        const empty = '<li><div class="team"><strong>No imported formats</strong>' +
+            '<small>Import a challenge code from a team’s Import format button to add one here.</small></div></li>';
+        room.$el.html(`<div class="pad qol-import-formats-page" style="max-width:760px;margin:0 auto;font-size:14px;line-height:1.45">` +
+            '<h2><i class="fa fa-folder-open-o" aria-hidden="true"></i> Import Formats</h2>' +
+            `<ul class="teamlist" style="list-style:none;padding:0">${rows || empty}</ul></div>`);
+        const root = room.$el[0];
+        if (!room.__qolImportFormatsClick) {
+            room.__qolImportFormatsClick = true;
+            root.addEventListener('click', (e) => {
+                const button = e.target?.closest?.('button[data-qol-import-edit], button[data-qol-import-delete], ' +
+                    'button[data-qol-import-visibility], button[data-qol-import-save], button[data-qol-import-cancel]');
+                if (!button) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const row = button.closest('.qol-import-format-row');
+                if (button.hasAttribute('data-qol-import-edit')) {
+                    row.querySelector('.qol-import-edit-form').hidden = false;
+                    return;
+                }
+                if (button.hasAttribute('data-qol-import-cancel')) {
+                    row.querySelector('.qol-import-edit-form').hidden = true;
+                    return;
+                }
+                const originalFormat = button.dataset.qolImportSave || button.dataset.qolImportDelete ||
+                    button.dataset.qolImportVisibility;
+                if (button.hasAttribute('data-qol-import-visibility')) {
+                    const entry = importedCustomFormats({includeHidden: true}).find((item) => item.format === originalFormat);
+                    if (entry) setImportedFormatHidden(originalFormat, !entry.hidden);
+                } else if (button.hasAttribute('data-qol-import-delete')) {
+                    removeImportedCustomFormat(originalFormat);
+                } else if (button.hasAttribute('data-qol-import-save')) {
+                    const label = squash(row.querySelector('[data-qol-edit-name]')?.value);
+                    const code = row.querySelector('[data-qol-edit-code]')?.value || '';
+                    const parsed = parseFormatImport(code);
+                    if (!label || parsed.error) {
+                        app.addPopupMessage(parsed.error || 'Enter a format name and at least one custom rule.');
+                        return;
+                    }
+                    const updatedFormat = parsed.rules.length ? parsed.base + '@@@' + parsed.rules.join(',') : parsed.base;
+                    updateImportedFormat(originalFormat, updatedFormat, label);
+                }
+                renderImportedFormatsRoom(room);
+                decorateImportedFormatPicker();
+            });
+        }
+    }
+
+    function openImportedFormatsPage() {
+        if (!window.app) return;
+        let room = app.rooms?.[IMPORT_FORMATS_ROOM_ID];
+        if (!room) {
+            try {
+                room = app.addRoom(IMPORT_FORMATS_ROOM_ID, 'html', true, 'Import Formats') ||
+                    app.rooms?.[IMPORT_FORMATS_ROOM_ID];
+            } catch (error) {
+                console.warn(LOG, 'Could not open Import Formats:', error);
+                return;
+            }
+        }
+        if (room?.$el) renderImportedFormatsRoom(room);
+        if (room) app.focusRoom(IMPORT_FORMATS_ROOM_ID);
+    }
+
+    function installImportedFormatsButton() {
+        if (IS_DAMAGE_CALC) return;
+        const room = getTeambuilderRoom();
+        const root = room?.el;
+        if (!root || room.curTeam) return;
+        const clearButton = [...root.querySelectorAll('button')].find((button) =>
+            /clear.*teams/i.test([button.textContent, button.title, button.getAttribute('aria-label'),
+                button.getAttribute('name'), button.getAttribute('data-cmd')].join(' '))
+        );
+        root.querySelector('.qol-import-formats-button')?.remove();
+        let button = root.querySelector('.qol-teambuilder-stats-button');
+        if (!button) {
+            button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'button qol-teambuilder-stats-button';
+            button.textContent = 'Stats';
+            button.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                try { openUsageStatsTab(); } catch (err) { console.error(LOG, 'Stats page failed:', err); }
+            });
+        }
+        button.className = 'button qol-teambuilder-stats-button';
+        button.textContent = 'Stats';
+        if (clearButton?.parentElement) {
+            if (button.nextElementSibling !== clearButton) clearButton.before(button);
+        } else if (!button.isConnected) {
+            const pane = root.querySelector('.teampane') || root;
+            const lastParagraph = pane.querySelector('p:last-of-type');
+            if (lastParagraph) {
+                button.style.cssText = 'float:right;margin:4px 0';
+                lastParagraph.appendChild(button);
+            } else {
+                button.style.cssText = 'display:block;margin:8px 0 8px auto';
+                pane.appendChild(button);
+            }
+        }
+    }
+
+    let importedFormatClickInstalled = false;
+    function installImportedFormatClick() {
+        if (importedFormatClickInstalled) return;
+        importedFormatClickInstalled = true;
+        document.addEventListener('click', (e) => {
+            const button = e.target?.closest?.('button.qol-challengeable-format');
+            if (!button) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            const room = getTeambuilderRoom();
+            if (!room?.curTeam) return;
+            const entry = importedCustomFormats().find((item) => item.format === button.dataset.qolImportedFormat);
+            if (!entry) return;
+            const [base, ruleText = ''] = entry.format.split('@@@');
+            const baseKey = resolveFormatKey(base);
+            if (!baseKey) return;
+            // Keep Showdown's team editor and dex in sync, then restore the full
+            // custom-rule string through the same path as the import dialog.
+            const formatButton = room.el?.querySelector('button[name="format"]');
+            if (formatButton) {
+                formatButton.value = baseKey;
+                formatButton.dispatchEvent(new Event('change', {bubbles: true}));
+            }
+            applyTeamFormat(room, baseKey, ruleText.split(',').map(squash).filter(Boolean), entry.label || '');
+            window.app?.closePopup?.();
+        }, true);
     }
 
     // -> {base, rules} or {error}
@@ -6202,7 +6542,8 @@
                 this.$el.html(wrap(
                     '<form>' +
                     '<p style="font-size:14px"><strong>Import format</strong></p>' +
-
+                    '<p style="opacity:.75">Paste a challenge line, e.g.<br>' +
+                    '<span style="font-family:monospace">/challenge gen9ou @@@ flippedmod, +Pikachu</span></p>' +
                     '<p style="margin:6px 0">Custom format name<br>' +
                     `<input type="text" name="qolfmtname" maxlength="50" placeholder="e.g. Pokébilities" value="${selfEsc(nameValue)}" ` +
                     `style="display:block;width:100% !important;${BOX} !important;font-size:12px"></p>` +
@@ -6211,6 +6552,7 @@
                     `${selfEsc(value)}</textarea></p>` +
                     noteHtml +
                     '<p class="buttonbar"><button type="submit" class="button"><strong>Import</strong></button> ' +
+                    (hasRules ? '<button type="button" class="button" data-qolfmt="remove">Remove custom rules</button> ' : '') +
                     '<button type="button" class="button" data-qolfmt="close">Close</button></p></form>'
                 ));
             },
@@ -6351,11 +6693,11 @@
 
                 // Keep this temporary guest's challenge traffic out of the main client's UI.
                 if (data.split('\n').every((line) =>
-                                           !line.startsWith('|updatechallenges|') || !toSearchId(line).includes(toSearchId(botName))
-                                          )) return state.origReceive.apply(this, arguments);
+                    !line.startsWith('|updatechallenges|') || !toSearchId(line).includes(toSearchId(botName))
+                )) return state.origReceive.apply(this, arguments);
                 const kept = data.split('\n').filter((line) =>
-                                                     !line.startsWith('|updatechallenges|') || !toSearchId(line).includes(toSearchId(botName))
-                                                    );
+                    !line.startsWith('|updatechallenges|') || !toSearchId(line).includes(toSearchId(botName))
+                );
                 if (!kept.length) return;
                 return state.origReceive.call(this, kept.join('\n'));
             }
@@ -6364,7 +6706,7 @@
         state.wrappedReceive.__original = state.origReceive;
         app.receive = state.wrappedReceive;
 
-        state.timer = setTimeout(() => finish('Your team is valid for this custom format.'), 4000);
+        state.timer = setTimeout(() => finish('Custom-rule validation timed out. No challenge was accepted.'), 20000);
         ws.onmessage = async (event) => {
             const data = String(event.data);
             if (state.done) return;
@@ -6395,8 +6737,8 @@
             }
 
             if (data.split('\n').some((line) =>
-                                      line.startsWith('|updateuser|') && toSearchId(line.split('|')[2]) === toSearchId(botName) && line.split('|')[3] === '1'
-                                     )) {
+                line.startsWith('|updateuser|') && toSearchId(line.split('|')[2]) === toSearchId(botName) && line.split('|')[3] === '1'
+            )) {
                 getTeambuilderRoom()?.save?.();
                 app.send('/utm ' + selfPackedOf(team));
                 state.sentChallenge = true;
@@ -6599,61 +6941,53 @@
     }
 
     function decorateCustomFormatDropdown() {
-        if (IS_DAMAGE_CALC) return;
-        const popup = document.querySelector('.ps-popup');
-        if (!popup || popup.querySelector('.qol-custom-formats')) return;
+    if (IS_DAMAGE_CALC) return;
+    const popup = document.querySelector('.ps-popup');
+    if (!popup || popup.querySelector('.qol-custom-formats')) return;
 
-        const sections = [...popup.querySelectorAll('details[section]')];
-        if (!sections.length || !popup.querySelector(FORMAT_BTN)) return;
+    const sections = [...popup.querySelectorAll('details[section]')];
+    if (!sections.length || !popup.querySelector(FORMAT_BTN)) return;
 
-        const formats = savedCustomFormats();
-        if (!formats.length) return;
+    const formats = savedCustomFormats();
+    if (!formats.length) return;
 
-        // Place it after the Challengeable section (fallback: after the last section).
-        const anchor =
-              sections.find((d) => /challengeable/i.test(d.querySelector('summary')?.textContent || '')) ||
-              sections[sections.length - 1];
+    // Place it after the Challengeable section (fallback: after the last section).
+    const anchor =
+        sections.find((d) => /challengeable/i.test(d.querySelector('summary')?.textContent || '')) ||
+        sections[sections.length - 1];
 
-        const details = document.createElement('details');
-        details.className = 'qol-custom-formats';
-        details.setAttribute('section', 'Custom Formats');
-        details.open = true;
+    const details = document.createElement('details');
+    details.className = 'qol-custom-formats';
+    details.setAttribute('section', 'Custom Formats');
+    details.open = true;
 
-        const summary = document.createElement('summary');
-        summary.style.cursor = 'pointer';
-        const strong = document.createElement('strong');
-        strong.style.color = '#579';
-        strong.textContent = 'Custom Formats';
-        summary.appendChild(strong);
-        details.appendChild(summary);
+    const summary = document.createElement('summary');
+    summary.style.cursor = 'pointer';
+    const strong = document.createElement('strong');
+    strong.style.color = '#579';
+    strong.textContent = 'Custom Formats';
+    summary.appendChild(strong);
+    details.appendChild(summary);
 
-        const currentKey = customFormatLabelKey(getTeambuilderRoom()?.curTeam?.format);
-
-        for (const format of formats) {
-            const li = document.createElement('li');
-            const btn = document.createElement('button');
-            btn.name = 'selectFormat';
-            btn.value = format;
-            btn.className = 'option' + (currentKey && customFormatLabelKey(format) === currentKey ? ' cur' : '');
-            btn.dataset.qolCustom = '1';
-            btn.style.cursor = 'pointer';
-            btn.append(document.createTextNode(displayFormatName(format)));
-
-            const star = document.createElement('i');
-            star.className = 'fa fa-star subtle';
-            star.style.float = 'right';
-            btn.appendChild(star);
-
-            li.appendChild(btn);
-            details.appendChild(li);
-        }
-
-        // The menu separates sections with two empty <p>s: skip past the ones
-        // after the anchor, then add the same spacing after ours.
-        let after = anchor;
-        while (after.nextElementSibling?.tagName === 'P') after = after.nextElementSibling;
-        after.after(details, document.createElement('p'), document.createElement('p'));
+    for (const format of formats) {
+        const li = document.createElement('li');
+        const btn = document.createElement('button');
+        btn.name = 'selectFormat';
+        btn.value = format;
+        btn.className = 'option';
+        btn.dataset.qolCustom = '1';
+        btn.style.cursor = 'pointer';
+        btn.textContent = displayFormatName(format);
+        li.appendChild(btn);
+        details.appendChild(li);
     }
+
+    // The menu separates sections with two empty <p>s: skip past the ones
+    // after the anchor, then add the same spacing after ours.
+    let after = anchor;
+    while (after.nextElementSibling?.tagName === 'P') after = after.nextElementSibling;
+    after.after(details, document.createElement('p'), document.createElement('p'));
+}
 
     // Picking a custom format while a team is open applies it directly
     // (the native handler doesn't know these format strings).
@@ -6684,13 +7018,13 @@
 
     // ====================================================================
     // SMOGON USAGE STATS TAB
-    // "Stats" main-menu button -> a tab with month / format / rating
-    // baseline / sort controls and a list of every Pokémon. Each row
-    // expands into the movesets data (abilities, items, moves, spreads,
-    // Tera types, teammates, checks and counters).
+    //   "Stats" main-menu button -> a tab with month / format / rating
+    //   baseline / sort controls and a list of every Pokémon. Each row
+    //   expands into the movesets data (abilities, items, moves, spreads,
+    //   Tera types, teammates, checks and counters).
     //
-    // Data: https://www.smogon.com/stats/<month>/chaos/<format>-<baseline>.json
-    // (the chaos JSON holds everything the moveset .txt files do).
+    //   Data: https://www.smogon.com/stats/<month>/chaos/<format>-<baseline>.json
+    //   (the chaos JSON holds everything the moveset .txt files do).
     // ====================================================================
 
     const USAGE = {
@@ -7045,7 +7379,7 @@
 .qol-us-dhead img{vertical-align:middle}
 .qol-us-detail h4{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;border-bottom:1px solid rgba(128,128,128,.3)}
 .qol-us-li{display:flex;align-items:center;gap:6px;min-height:20px;padding:1px 4px;font-size:12px;border-radius:3px;
-background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent var(--w,0%))}
+  background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent var(--w,0%))}
 .qol-us-li[data-jump]{cursor:pointer}
 .qol-us-li[data-jump]:hover{outline:1px solid rgba(128,128,128,.5)}
 .qol-us-li-name{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -7056,9 +7390,9 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
 .qol-us-empty{padding:14px;opacity:.7}
 
 @media (max-width:640px){
-.qol-us-rank,.qol-us-raw{display:none}
-.qol-us-head,.qol-us-cols{grid-template-columns:40px minmax(0,1fr) 54px 56px}
-.qol-us-detail{padding-left:10px}
+  .qol-us-rank,.qol-us-raw{display:none}
+  .qol-us-head,.qol-us-cols{grid-template-columns:40px minmax(0,1fr) 54px 56px}
+  .qol-us-detail{padding-left:10px}
 }`;
 
     function usageEnsureCss() {
@@ -7489,10 +7823,9 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
 
     function usageCleanUrl() {
         const id = USAGE.ROOM_ID;
-        const legacyImportRoom = 'qol-import-formats';
         if (!location.pathname.includes(id) && !location.hash.includes(id) &&
-            !location.pathname.includes(legacyImportRoom) && !location.hash.includes(legacyImportRoom)) return;
-        const path = location.pathname.replace(id, '').replace(legacyImportRoom, '').replace(/\/{2,}/g, '/') || '/';
+            !location.pathname.includes(IMPORT_FORMATS_ROOM_ID) && !location.hash.includes(IMPORT_FORMATS_ROOM_ID)) return;
+        const path = location.pathname.replace(id, '').replace(IMPORT_FORMATS_ROOM_ID, '').replace(/\/{2,}/g, '/') || '/';
         history.replaceState(history.state, '', path + location.search);
     }
 
@@ -7502,19 +7835,20 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
         const tournaments = document.querySelector('.menugroup button[value="/smogtours"]');
         const group = tournaments?.closest('.menugroup');
         if (!group) return;
-        let button = group.querySelector('#qol-usage-stats');
+        group.querySelector('#qol-usage-stats')?.closest('p')?.remove();
+        let button = group.querySelector('#qol-import-formats-menu');
         if (button) return;
 
         button = document.createElement('button');
         button.type = 'button';
-        button.id = 'qol-usage-stats';
+        button.id = 'qol-import-formats-menu';
         button.className = 'button mainmenu4';
         button.style.cursor = 'pointer';
-        button.textContent = 'Stats';
+        button.textContent = 'Import Formats';
         button.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            try { openUsageStatsTab(); } catch (err) { console.error(LOG, 'Stats page failed:', err); }
+            try { openImportedFormatsPage(); } catch (err) { console.error(LOG, 'Import Formats page failed:', err); }
         });
 
         const row = document.createElement('p');
@@ -7535,6 +7869,7 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
         ['badnboosted', 'Bad N Boosted', 'Doubles each base stat that is 70 or lower.'],
         ['camomons', 'Camomons', 'Uses the types of the first two selected moves.'],
         ['flipped', 'Flipped', 'Reverses HP / Atk / Def / SpA / SpD / Spe.'],
+        ['reevolution', 'Re-Evolution', 'Adds the base-stat difference from the immediate pre-evolution, capped at 255.'],
         ['350cup', '350 Cup', 'Doubles every base stat when the original BST is 350 or lower.'],
         ['natureswap', 'Nature Swap', 'Swaps the base stats boosted and lowered by the selected nature.'],
         ['franticfusions', 'Frantic Fusions', 'Adds one quarter of the donor’s non-HP stats.'],
@@ -7852,7 +8187,7 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
         const active = calcOmActiveAbilities(this);
         const hide = calcOmAbilityMode();
         for (const query of queries) {
-            if (CALC_OM_STAT_ABILITIES[query]) continue; // applied via rawStats instead
+            if (CALC_OM_STAT_ABILITIES[query]) continue;                 // applied via rawStats instead
             if (hide && CALC_OM_HIDDEN_FROM_ENGINE.has(query)) continue; // resolved in calcOmPrepareCalculation
             if (active.includes(query)) {
                 this.__qolOmQueried.add(query);
@@ -8319,14 +8654,14 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
         if (pokemon.__qolOmTracked) return;
 
         pokemon.__qolOmTracked = true;
-        pokemon.__qolOmReal = pokemon.ability; // read BEFORE redefining
-        pokemon.__qolOmRealOn = pokemon.abilityOn; // the page's checkbox value
+        pokemon.__qolOmReal = pokemon.ability;       // read BEFORE redefining
+        pokemon.__qolOmRealOn = pokemon.abilityOn;   // the page's checkbox value
         pokemon.__qolOmCleared = false;
-        pokemon.__qolOmExcluded = null; // leave-one-out probe
-        pokemon.__qolOmQueried = new Set(); // shared with clones
+        pokemon.__qolOmExcluded = null;              // leave-one-out probe
+        pokemon.__qolOmQueried = new Set();          // shared with clones
         pokemon.__qolOmShared = pokemon.__qolOmShared || [];
         pokemon.__qolOmStatMult = null;
-        pokemon.__qolOmLast = null; // last ability hasAbility() said yes to
+        pokemon.__qolOmLast = null;                  // last ability hasAbility() said yes to
         pokemon.__qolOmProteanType = null;
 
         Object.defineProperty(pokemon, 'hasAbility', {configurable: true, writable: true, value: calcOmHasAbility});
@@ -8435,6 +8770,11 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
             for (const stat of STATS) if (stats[stat] <= 70) stats[stat] *= 2;
         } else if (mod === 'flipped') {
             return {hp: original.spe, atk: original.spd, def: original.spa, spa: original.def, spd: original.atk, spe: original.hp};
+        } else if (mod === 'reevolution') {
+            const prevo = pokemon.species.prevo && pokemon.gen?.species?.get?.(toSearchId(pokemon.species.prevo));
+            if (prevo?.exists && prevo.baseStats && !prevo.battleOnly) {
+                for (const stat of STATS) stats[stat] = clamp255(stats[stat] + original[stat] - calcOmSpeciesStat(prevo, stat));
+            }
         } else if (mod === '350cup') {
             const bst = STATS.reduce((sum, stat) => sum + stats[stat], 0);
             if (bst <= 350) for (const stat of STATS) stats[stat] = clamp255(stats[stat] * 2);
@@ -8680,6 +9020,12 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
             for (const stat of STATS) if (stats[stat] <= 70) stats[stat] *= 2;
         } else if (mod === 'flipped') {
             Object.assign(stats, {hp: original.spe, atk: original.spd, def: original.spa, spa: original.def, spd: original.atk, spe: original.hp});
+        } else if (mod === 'reevolution') {
+            const prevo = pokemon?.prevo && (genData?.species?.get?.(toSearchId(pokemon.prevo)) || calcOmFindSpecies(pokemon.prevo, genData));
+            if (prevo?.exists === false || !prevo?.baseStats || prevo.battleOnly) return null;
+            if (prevo?.baseStats) {
+                for (const stat of STATS) stats[stat] = clamp255(stats[stat] + original[stat] - calcOmSpeciesStat(prevo, stat));
+            }
         } else if (mod === '350cup') {
             if (STATS.reduce((sum, stat) => sum + stats[stat], 0) <= 350) {
                 for (const stat of STATS) stats[stat] = clamp255(stats[stat] * 2);
@@ -9184,7 +9530,7 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
             const gen = Number(String(format || '').match(/^gen(\d+)/i)?.[1]) || 0;
             const genSpecies = gen && typeof Dex.forGen === 'function' ? Dex.forGen(gen).species.get(sp.id) : null;
             const tier = natdex ? (search && natdexTierMap(search)?.get(sp.id)) || '(unknown)' :
-            toID(genSpecies?.exists ? genSpecies.tier : sp.tier);
+                toID(genSpecies?.exists ? genSpecies.tier : sp.tier);
             const bans = getMergedBans(room);
             const baseId = toID(sp.baseSpecies || sp.name);
             return {
@@ -9257,11 +9603,8 @@ background:linear-gradient(90deg,rgba(74,144,217,.28) var(--w,0%),transparent va
     installDomDecorators();
     installCoverageSeparatorFix();
     installClearFiltersListener();
-    installCustomFormatDropdownListener();
     installValidateListener();
     resumeSelfChallenge();
-
-
-
+    installCustomFormatDropdownListener();
 
 })();
