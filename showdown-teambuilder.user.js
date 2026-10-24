@@ -302,7 +302,11 @@
     function modsForSearch(search) {
         const room = getActiveTeambuilderRoom();
         const team = room?.curTeam;
-        if (team && search && searchFormatId(team.format) === searchFormatId(search.format)) {
+        const engine = room?.search?.engine;
+        // PS strips generation, National Dex, doubles, etc. from search.format.
+        // Prefer ownership; comparing the raw format strings loses custom rules.
+        const owned = search && [engine?.typedSearch, engine?.moveSearch, engine?.abilitySearch].includes(search);
+        if (team && search && (owned || searchFormatId(team.format) === searchFormatId(search.format))) {
             return getActiveMods(room);
         }
         return modsFromFormatString(search?.format);
@@ -429,6 +433,7 @@
     const clearSearchCache = (search) => {
         search.baseResults = null;
         search.baseIllegalResults = null;
+        search.illegalReasons = null;
     };
 
     // Throws away the engine's results (and optionally the typed search's
@@ -1141,9 +1146,13 @@
 
             // The base legal pool must come from Gen 9, not TSA's stale format data.
             const savedFormat = this.format;
-            this.format = 'gen9';
-            const gen9Results = original.call(this);
-            this.format = savedFormat;
+            this.format = 'customgame'; // PS has already stripped the generation prefix.
+            let gen9Results;
+            try {
+                gen9Results = original.call(this);
+            } finally {
+                this.format = savedFormat;
+            }
 
             return gen9Results.filter((result) => {
                 if (result[0] !== this.searchType) return true;
@@ -2503,7 +2512,7 @@
         const kept = results.filter((r) => (test(r) ? (hit.push(r), false) : true));
         return hit.length ? [...dropEmptyHeaders(kept), ['header', header], ...hit] : results;
     }
-
+    
         // Re-applies the Banned / Restricted groups to any result list (also flat search / sort lists).
     function applyGroups(results, groups) {
         let out = results;
@@ -2534,7 +2543,7 @@
             }
         );
     }
-
+    
         function moveBannedAbilitiesToHeader(search, results) {
         search.__qolGroups = null;
         if (!Array.isArray(results)) return results;
@@ -2829,13 +2838,14 @@
 
     const ALLOWED_POKEMON_FILTER_TYPES = [
         'type', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
-        'natdex', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'hazards', 'into', 'from',
+        'natdex', 'hackmons', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'hazards', 'into', 'from',
         'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution', 'restricted', 'realbulk',
     ];
     // Toggle filters take no argument: typing the keyword and picking the
     // single suggestion adds/removes the chip. Value = display label.
     const CUSTOM_TOGGLE_FILTERS = {
         natdex: 'National Dex',
+        hackmons: 'Hackmons',
         fe: 'Fully Evolved',
         recovery: 'Recovery',
         pivot: 'Pivot',
@@ -2846,7 +2856,6 @@
         mythical: 'Mythical',
         paradox: 'Paradox',
         eeveelution: 'Eeveelution',
-        removal: 'Removal',
         hazards: 'Hazards',
         restricted: 'Restricted',
         realbulk: 'Real Bulk',
@@ -3191,6 +3200,7 @@
 
     // Does `species` satisfy one (non-negated) filter?
     function pokemonFilterMatches(search, original, row, species, type, target) {
+        if (type === 'natdex' || type === 'hackmons') return pokemonFormatPool(search, type).ids.has(species.id);
         if (EFFECT_LABELS[type]) return pokemonMatchesEffectiveness(search.dex, species, type, target);
         if (type === 'into') return !!crossEvolveView(search.dex, species, target);
         if (type === 'from') return !!crossEvolveView(search.dex, search.dex.species.get(target), species.id);
@@ -3220,8 +3230,8 @@
                 const negated = isNegatedFilterType(rawType);
                 const type = baseFilterType(rawType);
 
-                // natdex only widens the pool; stone only changes how rows are judged/shown.
-                if (type === 'natdex' || type === 'stone' || type === 'realbulk') continue;
+                // Pool chips are membership filters, including their negated forms.
+                if (type === 'stone' || type === 'realbulk') continue;
 
                 let matches;
                 if (view && type === 'type') {
@@ -3240,7 +3250,7 @@
     }
 
     // ---------- Pokémon search results: one getResults wrapper ----------
-    //   before: remember into/from chips, widen pool for "natdex"
+    //   before: remember into/from chips, select the native format pool
     //   after:  apply server banlist, then Godly Gift legality
 
     // Moves rows matching `isBanned` into the "Illegal results" section (created if the
@@ -3272,23 +3282,17 @@
         );
     }
 
-    // The client's species.tier is the regular (non-National Dex) tier, but its National Dex search
-    // list is already grouped by National Dex tier ("Uber", "OU", ...). Read the tier off the section
-    // header each Pokémon sits under, so "ND Uber" bans can be judged. Cached per base-results list.
+    // Read tiers through PS itself: headers omit banned species and can say
+    // "OU by technicality", which is not a tier id.
     function natdexTierMap(search) {
-        const base = search.baseResults;
-        if (!Array.isArray(base)) return null;
-        if (search.__qolTierMap && search.__qolTierMapFor === base) return search.__qolTierMap;
-
+        if (!search?.dex) return null;
+        const pool = pokemonFormatPool(search, 'natdex');
+        if (pool.tiers) return pool.tiers;
         const map = new Map();
-        let tier = '';
-        for (const row of base) {
-            if (row[0] === 'header') tier = toID(String(row[1])); // "(Uber)" -> 'uber'
-            else if (row[0] === 'pokemon') map.set(row[1], tier);
+        for (const id of Object.keys(window.BattlePokedex || {})) {
+            map.set(id, toID(pool.search.getTier(pool.search.dex.species.get(id))));
         }
-        search.__qolTierMap = map;
-        search.__qolTierMapFor = base;
-        return map;
+        return (pool.tiers = map);
     }
 
     function formatSpeciesTier(search, species) {
@@ -3297,7 +3301,7 @@
         return toID(formatSpecies?.exists ? formatSpecies.tier : species.tier);
     }
 
-    function applyGenericBans(search, results, hasNatdex) {
+    function applyGenericBans(search, results) {
         const banFormat =
               getActiveTeambuilderRoom()?.curTeam?.format || search.format;
         const bans = getMergedBansForFormat(banFormat); // base list + the team's custom rules
@@ -3338,22 +3342,39 @@
         const isIllegal = room && getGodlyGiftIllegalChecker(room);
         if (!isIllegal) return results;
 
-        const legal = [];
-        const illegal = [];
+        return moveBannedToIllegal(search, results, isIllegal, () => 'Only one restricted Pokémon is allowed');
+    }
 
-        for (const row of results) {
-            if (row[0] !== 'pokemon') {
-                legal.push(row);
-                continue;
-            }
-            (isIllegal(search.dex.species.get(row[1])) ? illegal : legal).push(row);
+    // Build a separate native search so PS initializes formatType and generation
+    // correctly without changing the team's format or the live search's Dex.
+    const pokemonFormatPoolCache = new WeakMap();
+    function pokemonFormatPool(search, kind) {
+        const gen = search.dex.gen;
+        const hasNatdexTable = !!window.BattleTeambuilderTable?.[`gen${gen}natdex`];
+        const format = `gen${gen}${kind === 'natdex'
+            ? (hasNatdexTable ? 'nationaldex' : 'ou') : 'purehackmons'}`;
+        let cache = pokemonFormatPoolCache.get(search);
+        if (!cache || cache.dex !== search.dex || cache.table !== window.BattleTeambuilderTable) {
+            cache = {dex: search.dex, table: window.BattleTeambuilderTable, pools: new Map()};
+            pokemonFormatPoolCache.set(search, cache);
         }
-
-        if (!illegal.length) return results;
-        return legal.concat([['header', TL(['Illegal results'])], ...illegal]);
+        if (!cache.pools.has(format)) {
+            const native = new window.BattlePokemonSearch('pokemon', format);
+            const rows = native.getBaseResults();
+            cache.pools.set(format, {
+                search: native, rows,
+                ids: new Set(rows.filter((row) => row[0] === 'pokemon').map((row) => row[1])),
+            });
+        }
+        return cache.pools.get(format);
     }
 
     function patchPokemonSearchResults() {
+        patchMethod(window.BattlePokemonSearch?.prototype, 'getTier', '__qolPoolTierPatched', (original) =>
+            function (species) {
+                return this.__qolPokemonPool
+                    ? this.__qolPokemonPool.search.getTier(species) : original.call(this, species);
+            });
         return patchMethod(window.BattlePokemonSearch?.prototype, 'getResults', '__qolPokemonResultsPatched', (original) =>
                            function (filters, sortCol, reverseSort) {
             if (this.searchType !== 'pokemon') return original.call(this, filters, sortCol, reverseSort);
@@ -3370,33 +3391,36 @@
             this.__qolTypemons = modsForSearch(this).includes(MOD.TYPEMONS)
                 ? typemonsType(getActiveTeambuilderRoom(), this) : null;
 
-            // "natdex" chip: use the complete Pokédex as the legal pool
-            // (includes mons the format normally considers illegal).
-            const hasNatdex =
-                  Array.isArray(filters) && filters.some(([rawType]) => baseFilterType(rawType) === 'natdex');
+            // Positive chips select a native base pool; all pool chips then AND
+            // together as membership filters. Negative chips never widen the pool.
+            const poolKind = ['natdex', 'hackmons'].find((kind) =>
+                Array.isArray(filters) && filters.some(([type]) => type === kind)) || null;
+            const pool = poolKind ? pokemonFormatPool(this, poolKind) : null;
+            if (this.__qolPokemonPool !== pool) {
+                clearSearchCache(this);
+                this.__qolPokemonPool = pool;
+            }
+            if (pool && !this.baseResults) this.baseResults = pool.rows;
 
-            if (hasNatdex) {
-                this.baseResults = this.getDefaultResults();
-                this.baseIllegalResults = [];
-                this.illegalReasons = {};
-                this.__qolNatdexPoolActive = true;
-            } else if (this.__qolNatdexPoolActive) {
-                // Filter removed: drop the widened cache so real legality is rebuilt.
-                this.__qolNatdexPoolActive = false;
-                this.baseResults = null;
-                this.baseIllegalResults = null;
-                this.illegalReasons = null;
+            // Dynamic bans must not stick after a team/rule change. Keep the
+            // client's native reasons separately from reasons added below.
+            if (this.baseIllegalResults && this.__qolIllegalPool === this.baseIllegalResults) {
+                this.illegalReasons = {...this.__qolNativeIllegalReasons};
             }
 
             let results = original.call(this, filters, sortCol, reverseSort);
             if (!Array.isArray(results)) return results;
+            if (this.__qolIllegalPool !== this.baseIllegalResults) {
+                this.__qolIllegalPool = this.baseIllegalResults;
+                this.__qolNativeIllegalReasons = {...this.illegalReasons};
+            }
             if (isMnmSearch(this)) {
                 results = dropEmptyHeaders(results.filter(
                     (r) => r[0] !== 'pokemon' || !requiresHeldItem(this.dex.species.get(r[1]))
                 ));
             }
 
-            results = applyGenericBans(this, results, hasNatdex);
+            results = applyGenericBans(this, results);
             return applyGodlyGiftLegality(this, results);
         }
                           );
@@ -4183,6 +4207,15 @@
     }
 
     function pokemonTextSearch(engine, original, query) {
+        const poolFilters = (engine.filters || []).filter(([type]) =>
+            ['natdex', 'hackmons'].includes(baseFilterType(type)));
+        // Native textSearch bypasses getResults/filter. Keep pool membership
+        // and legality in sync while typing as well as in the blank-query list.
+        if (poolFilters.length || engine.typedSearch?.__qolPokemonPool) {
+            engine.typedSearch.getResults(engine.filters, null, false);
+        }
+        const nativeSearch = (text) => dropEmptyHeaders((original.call(engine, text) || []).filter((row) =>
+            row[0] !== 'pokemon' || !poolFilters.length || engine.typedSearch.filter(row, poolFilters)));
         const raw = String(query || '').trim();
         const negated = raw.startsWith('!');
         const q = (negated ? raw.slice(1) : raw).trim().toLowerCase();
@@ -4197,7 +4230,7 @@
                 // Drop native suggestions colliding with our keywords (e.g. the
                 // real "natdex" tier), then put ours first so they're the
                 // default (Enter) selection.
-                const native = (original.call(engine, query) || []).filter((row) => !isReservedToggleCollisionRow(row));
+                const native = nativeSearch(query).filter((row) => !isReservedToggleCollisionRow(row));
                 const custom = customToggleSuggestions(raw);
                 const stones = stoneSuggestions(engine, raw);
 
@@ -4208,8 +4241,6 @@
                 if (stones.length) head.push(['header', 'Mega Stones'], ...stones);
                 return (engine.results = head.concat(native));
 
-                if (!custom.length) return native;
-                return (engine.results = [['header', 'Mod Filters'], ...custom].concat(native));
             }
 
             engine.__qolNegateMode = true;
@@ -4800,11 +4831,6 @@
                         abilities: view.abilities || pokemon.abilities,
                     }), errorMessage));
                 }
-            }
-
-            const filters = this.engine?.typedSearch?.filters ?? [];
-            if (filters.some((f) => Array.isArray(f) && f[0] === 'natdex')) {
-                return finish(call(pokemon, undefined));
             }
 
             const mods = getActiveMods();
@@ -5638,7 +5664,7 @@
 
         let scheduled = false;
 
-        // Runs at document-start, so observe documentElement (body may not exist yet).
+        // documentElement itself can still be null at userscript document-start.
         new MutationObserver(() => {
             if (scheduled) return;
             scheduled = true;
@@ -5652,7 +5678,7 @@
                     }
                 }
             });
-        }).observe(document.documentElement, {childList: true, subtree: true});
+        }).observe(document, {childList: true, subtree: true});
     }
 
 
@@ -6237,8 +6263,15 @@
         button.type = 'button';
         button.id = 'qol-self-challenge';
         button.className = 'button mainmenu4'; // same look as Tournaments
-        button.style.cursor = 'pointer';
-        button.innerHTML = '<i class="fa fa-exchange"></i> Challenge Yourself';
+        Object.assign(button.style, {
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+            paddingBlock: '4px',
+        });
+        button.textContent = 'Challenge Yourself';
         button.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
