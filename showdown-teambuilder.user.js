@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      17.0.0
+// @version      17.1.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -2084,6 +2084,9 @@
                           /mega/i.test(sp.forme || ''))) continue;
                 } else if (sp.battleOnly || sp.isNonstandard) continue;
                 if (CONVERGENCE_EXCLUDED_DONORS.has(sp.id)) continue;
+                // Megamons Mega formes are recipients ONLY: they never contribute
+                // their own moves or abilities to another Pokémon's pool.
+                if (megamons && sp.isMega) continue;
                 // Explicit bans always take priority over the special form rule.
                 if (bannedIds.has(sp.id) || bannedBases.has(toID(sp.baseSpecies || sp.name))) {
                     if (!allowedByRule) continue;
@@ -2109,7 +2112,7 @@
 
         map = new Map();
 
-        for (const member of getConvergenceGroup(search.dex, species, getActiveTeambuilderRoom()?.curTeam?.format || search.format)) {
+        for (const member of getConvergenceGroup(search.dex, species, activeFormat)) {
             const rows = withSearchSpecies(search, member.name, base);
             let header = null;
 
@@ -2125,7 +2128,7 @@
     }
 
     function convergenceMoveResults(search, base) {
-        const results = base();
+        let results = base();
         if (!search.species) return results;
 
         // Do not gate the entire Convergence provider on /tier. Some Showdown
@@ -2138,6 +2141,21 @@
 
         const species = search.dex.species.get(search.species);
         if (!species?.exists) return results;
+
+        const activeFormat = getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+        if (isConvergenceMegamons(activeFormat) && species.isMega) {
+            // A Mega with a base species available in SV keeps that base
+            // species' natural learnset (Sceptile-Mega can use Shed Tail).
+            // A Mega with a dexited base species only receives donor moves.
+            const baseSpecies = search.dex.species.get(species.baseSpecies);
+            if (baseSpecies?.exists && !baseSpecies.isNonstandard) {
+                const baseRows = withSearchSpecies(search, baseSpecies.name, base);
+                results = baseRows;
+            } else {
+                // A Mega's native historical learnset is not automatically legal.
+                results = results.filter(row => row[0] !== 'move');
+            }
+        }
 
         const map = getConvergenceMoveMap(search, base, species);
         const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
@@ -2176,8 +2194,12 @@
         const species = search.dex.species.get(search.species);
         if (!species?.exists) return results;
 
+        const activeFormat = getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+        const megaRecipient = isConvergenceMegamons(activeFormat) && species.isMega;
         const notes = results.filter((r) => r[0] === 'html');
-        const own = results.filter((r) => r[0] === 'ability');
+        // Mega formes cannot retain their own abilities. They can only select
+        // an ability supplied by a non-Mega donor of the same current typing.
+        const own = megaRecipient ? [] : results.filter((r) => r[0] === 'ability');
         // Custom-format searches can start with no native abilities. Convergence
         // must still contribute the shared-typing ability pool.
         const seen = new Set(own.map((r) => r[1]));
@@ -2200,7 +2222,9 @@
         extra.sort((a, b) => a[1].localeCompare(b[1]));
         addDonors(search, donors);
 
-        return extra.length ? [...notes, ['header', 'Converged Abilities'], ...own, ...extra] : results;
+        return megaRecipient
+            ? [...notes, ['header', 'Converged Abilities'], ...extra]
+            : (extra.length ? [...notes, ['header', 'Converged Abilities'], ...own, ...extra] : results);
     }
 
     // ====================================================================
@@ -5396,13 +5420,30 @@
         const Optimizer = window.BattleStatOptimizer;
         if (typeof Optimizer !== 'function') return false;
         if (Optimizer.__qolFormatPatched) return true;
+
+        // The old client invokes BattleStatOptimizer(set, format) as a regular
+        // function from checkStatOptimizations(), not with `new`. Intercept
+        // apply() and normalize argument 1 (format), NOT argument 0 (set).
+        // The optimizer only needs a real Dex mod to read its generation and
+        // mechanics; our own wrappers supply the custom species base stats.
+        const nativeOptimizerFormat = (format) => {
+            const base = String(format || '').split('@@@')[0];
+            const resolved = resolveFormatKey(base) || toID(base);
+            const room = getActiveTeambuilderRoom();
+            const match = String(resolved).match(/^gen([1-9])(?!\d)/);
+            const generation = Number(match?.[1] || room?.curTeam?.dex?.gen || room?.curTeam?.gen || window.Dex?.gen || 9);
+            return `gen${generation}`;
+        };
         const Wrapped = new Proxy(Optimizer, {
+            apply(target, thisArg, args) {
+                const normalized = args.slice();
+                if (normalized.length > 1) normalized[1] = nativeOptimizerFormat(normalized[1]);
+                return Reflect.apply(target, thisArg, normalized);
+            },
             construct(target, args, newTarget) {
-                if (typeof args[0] === 'string') {
-                    args = args.slice();
-                    args[0] = statGuesserFormat(args[0]);
-                }
-                return Reflect.construct(target, args, newTarget);
+                const normalized = args.slice();
+                if (normalized.length > 1) normalized[1] = nativeOptimizerFormat(normalized[1]);
+                return Reflect.construct(target, normalized, newTarget);
             },
         });
         Wrapped.__qolFormatPatched = true;
@@ -5410,20 +5451,83 @@
         return true;
     }
 
+    // Custom challenge formats can retain a stale team.gen even when their
+    // format explicitly says gen9. Showdown chooses between Tera Type and
+    // Hidden Power controls using curTeam.gen, not the actual battle rules.
+    // Reconcile only explicitly generation-prefixed formats; don't infer one
+    // from a custom name or override a generation-less legacy team.
+    function syncExplicitFormatGeneration(team) {
+        if (!team) return false;
+        const format = String(team.format || '');
+        const match = format.match(/^gen(\d+)(?=[a-z]|@@@|$)/i);
+        // The custom Convergence Megamons rules use Scarlet/Violet mechanics
+        // even when the challenge-code base format has a different generation.
+        // Also support a saved imported-format label, and the future named OM.
+        const megamons = isConvergenceMegamons(format) ||
+            toSearchId(getCustomFormatLabel(format)) === 'convergencemegamons' ||
+            toSearchId(team.name || '') === 'convergencemegamons';
+        const generation = megamons ? 9 : Number(match?.[1]);
+        if (!Number.isInteger(generation) || generation < 1 || generation > 9) return false;
+        if (team.gen === generation && team.dex?.gen === generation) return false;
+        team.gen = generation;
+        if (typeof Dex.forGen === 'function') team.dex = Dex.forGen(generation);
+        return true;
+    }
+
+    // Showdown's team overview and details dialog have different render paths.
+    // Guard both BEFORE their native layout code reads curTeam.gen: a later
+    // refresh must not restore an older-generation Hidden Power selector.
+    function patchCustomTeamGenerationRendering() {
+        const proto = window.TeambuilderRoom?.prototype;
+        if (!proto) return false;
+        // Install each available hook independently. Array.every short-circuits
+        // if a client version lacks one method, leaving subsequent hooks absent.
+        // The outer update entry point also covers re-opening the team overview.
+        const methods = ['update', 'updateChart', 'updateDetailsForm', 'renderSet'];
+        let patched = 0;
+        for (const method of methods) {
+            if (typeof proto[method] !== 'function') continue;
+            if (patchMethod(proto, method, '__qolGenBeforeRender_' + method,
+                (original) => function (...args) {
+                    syncExplicitFormatGeneration(this.curTeam);
+                    return original.apply(this, args);
+                })) patched++;
+        }
+        return patched > 0;
+    }
+
     function patchStatForm() {
         const proto = window.TeambuilderRoom?.prototype;
-
-        const updateForm = patchMethod(proto, 'updateStatForm', '__qolPatched', (original) =>
-                                       function (setGuessed) {
-            const result = withActiveModdedStatSpecies(this, () => original.call(this, setGuessed));
-
-            applyModBaseStatColumn(this);
-            if (getActiveMods(this).includes(MOD.MIX_AND_MEGA) && this.curSet?.species) {
-                renderMixAndMegaSpeedNote(this);
+        // Details are recreated on each visit. Ensure a Gen 9 custom format
+        // cannot silently render Gen 7's Hidden Power menu after re-enabling.
+        const detailsForm = patchMethod(proto, 'updateDetailsForm', '__qolSyncFormatGenDetails', (original) =>
+            function (...args) {
+                syncExplicitFormatGeneration(this.curTeam);
+                return original.apply(this, args);
             }
-            return result;
-        }
-                                      );
+        );
+
+        // Showdown's native updateStatForm(true) SAVES the guessed EVs but only
+        // calls updateStatGraph()/natureChange(). It does NOT replace the stat
+        // inputs/sliders. Rebuild once, synchronously, from the committed set.
+        // Do both calls inside the same species override to keep custom-format
+        // base stats consistent; never invoke another guessed spread.
+        const updateForm = patchMethod(proto, 'updateStatForm', '__qolPatched', (original) =>
+            function (setGuessed) {
+                const result = withActiveModdedStatSpecies(this, () => {
+                    const value = original.call(this, setGuessed);
+                    if (setGuessed === true && this.curSet) {
+                        original.call(this, false);
+                    }
+                    return value;
+                });
+                applyModBaseStatColumn(this);
+                if (getActiveMods(this).includes(MOD.MIX_AND_MEGA) && this.curSet?.species) {
+                    renderMixAndMegaSpeedNote(this);
+                }
+                return result;
+            }
+        );
 
         // Same post-hook for these: re-apply the base stat column.
         const columnPatches = ['updateStatGraph', 'natureChange'].map((key) =>
@@ -5437,32 +5541,9 @@
                                                                                  )
                                                                      );
 
-        // Auto-EVs are determined before updateStatGraph; patch the guessing entry
-        // point too, otherwise EVs will lag until the set is reopened.
-        const guessPatches = ['setStatFormGuesses', 'checkStatOptimizations'].map((key) =>
-            typeof proto?.[key] !== 'function' || patchMethod(proto, key, '__qolModded_' + key,
-                (original) => function (...args) {
-                    const before = this.curSet && JSON.stringify([this.curSet.evs, this.curSet.nature]);
-                    const result = withActiveModdedStatSpecies(this, () => original.apply(this, args));
-                    const after = this.curSet && JSON.stringify([this.curSet.evs, this.curSet.nature]);
-                    // In some builds the auto-spread callback commits EVs after
-                    // rendering the stat panel. Only refresh when values changed;
-                    // do not recursively rerun the optimizer or mutate the set.
-                    if (before !== after && !this.__qolGuessRefreshPending) {
-                        const room = this, set = this.curSet;
-                        room.__qolGuessRefreshPending = true;
-                        requestAnimationFrame(() => {
-                            room.__qolGuessRefreshPending = false;
-                            if (room.curSet !== set || !room.curTeam) return;
-                            try {
-                                room.updateStatForm?.(false);
-                                room.updateStatGraph?.();
-                            } catch (e) { console.warn(LOG, 'EV graph refresh failed:', e); }
-                        });
-                    }
-                    return result;
-                })
-        );
+        // No deferred guessed-EV redraw: the updateStatForm(true) wrapper above
+        // immediately follows the native save with updateStatForm(false).
+        // Asynchronous refreshes can race Safari's editor and leave inputs blank.
 
         const statSlide = patchMethod(proto, 'statSlide', '__qolPatched', (original) =>
                                       function (...args) {
@@ -5472,7 +5553,7 @@
         }
                                      );
 
-        return updateForm && statSlide && columnPatches.every(Boolean) && guessPatches.every(Boolean);
+        return detailsForm && updateForm && statSlide && columnPatches.every(Boolean);
     }
 
     // The Details pane's type icons come from the *named* species with no
@@ -5536,7 +5617,23 @@
                 ({val, nickname} = resolveIntoSelection(this, val));
             }
 
+            const megaConvPick = chartName === 'pokemon' && isConvergenceMegamons(this.curTeam?.format);
+            const previousItem = megaConvPick ? this.curSet?.item || '' : null;
             const result = original.call(this, val, selectNext);
+
+            if (megaConvPick && this.curSet) {
+                const selected = Dex.species.get(this.curSet.species);
+                const held = Dex.items.get(this.curSet.item);
+                // Native Showdown auto-fills Mega Stones when selecting a Mega
+                // forme. Megamons treats Mega formes as ordinary species.
+                if (selected?.isMega && held?.exists && held.megaStone &&
+                    this.curSet.item !== previousItem) {
+                    this.curSet.item = previousItem;
+                    this.$('input[name=item]').val(previousItem);
+                    refreshItemIcon(this);
+                    this.save?.();
+                }
+            }
 
             if (nickname && this.curSet) {
                 this.curSet.name = nickname;
@@ -7091,14 +7188,14 @@
         team.format = nextFormat;
         if (rules.length && customName) saveCustomFormatLabel(team.format, customName);
         if (!formatChanged) {
+            syncExplicitFormatGeneration(team);
             // A name change should not reset the editor or duplicate its rows.
             decorateCustomFormatNames();
             return true;
         }
-        if (newGen && newGen !== oldGen) {
-            team.gen = Number(newGen);
-            if (typeof Dex.forGen === 'function') team.dex = Dex.forGen(team.gen);
-        }
+        // Synchronize even when the format prefix is unchanged: team.gen can
+        // be stale after importing or reopening an existing custom-format team.
+        syncExplicitFormatGeneration(team);
 
         room.save?.();
         refreshAfterFormatChange(room);
@@ -10082,6 +10179,7 @@
             patchGetStat(),
             patchBattleStatOptimizerConstructor(),
             patchStatForm(),
+            patchCustomTeamGenerationRendering(),
             patchRenderSetTypeIcons(),
             patchChartSet(),
             patchMoveSearchSort(),
