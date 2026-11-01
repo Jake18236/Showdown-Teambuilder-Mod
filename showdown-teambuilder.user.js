@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      17.2.1
+// @version      17.2.2
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -884,6 +884,7 @@
 
         b.sent = true;
         b.silent = true;
+        b.sentAt = Date.now();
         app.send(b.command);
     }
 
@@ -1376,63 +1377,66 @@
         return entry;
     }
 
-    // Returns null if the reply isn't ours, otherwise {suppress} (true only
-    // for the reply to our own silent request).
-    function handleGenericBanlistRaw(html) {
-        if (!html || !genericBanlists.size || !html.includes('<h2>')) return null;
+    // PMs created by /formathelp and /tier have no request ID. Match their
+    // headings against *outstanding* script requests, never against old cache
+    // entries: otherwise users' own /tier replies can disappear.
+    const SILENT_BANLIST_TIMEOUT = 30000;
+    const pendingGenericEntries = () => [...genericBanlists.entries()].filter(([, entry]) =>
+        entry.silent && entry.sentAt && Date.now() - entry.sentAt < SILENT_BANLIST_TIMEOUT);
+    const namedRequestPending = (key) => {
+        const entry = BL[key];
+        return !!entry?.silent && !!entry.sentAt && Date.now() - entry.sentAt < SILENT_BANLIST_TIMEOUT;
+    };
 
-        // "natdex" and "nationaldex" are the same thing in format names.
-        const normFmt = (id) => id.replace(/natdex/g, 'nationaldex');
-
-        const title = new DOMParser().parseFromString(html, 'text/html').querySelector('h2')?.textContent || '';
-        const titleId = normFmt(fmtId(title));
-        console.log(LOG, 'banlist reply title:', JSON.stringify(title), '| pending:', [...genericBanlists.keys()]);
-        const titleIsNatdex = titleId.includes('nationaldex');
-
-        let formatId = [...genericBanlists.keys()].find((k) => normFmt(k) === titleId) || null;
-
-        // Title didn't match: if exactly one request is still waiting, assume it's
-        // the reply, but natdex-ness must agree in BOTH directions.
-        if (!formatId) {
-            const waiting = [...genericBanlists.entries()].filter(([id, e]) =>
-                                                                  !e.loaded && e.silent && Date.now() - e.sentAt < 15000 &&
-                                                                  normFmt(id).includes('nationaldex') === titleIsNatdex
-                                                                 );
-            if (waiting.length === 1 && /Bans\s*<\/b>\s*-/.test(html)) {
-                formatId = waiting[0][0];
-                console.log(LOG, `Banlist title "${title}" did not match "${formatId}"; assuming it is the reply.`);
+    function finishGenericBanlistReply(formatId, html) {
+        const entry = genericBanlists.get(formatId);
+        if (!entry?.silent) return false;
+        const sections = parseFormatSectionTokens(html, null);
+        if (sections && Object.keys(sections).length) {
+            entry.bans = parseBanSections(sections);
+            for (const tier of inferredTierBans(formatId).tiers) entry.bans.tiers.add(tier);
+            entry.merged = null;
+            entry.loaded = true;
+            if (isConvergenceMegamons(getActiveTeambuilderRoom()?.curTeam?.format) || isConvergenceMegamons(formatId)) {
+                convergenceIndexCache.clear();
+                convergenceMoveCache.clear();
+            }
+            const room = getTeambuilderRoom();
+            if (room?.search?.engine?.typedSearch) refreshSearch(room, {clearBase: true});
+            const engine = room?.search?.engine;
+            if (engine?.abilitySearch) clearSearchCache(engine.abilitySearch);
+            if (engine?.typedSearch?.searchType === 'ability') refreshSearch(room, {clearBase: true});
+            if (room?.curSet && getActiveMods(room).includes(MOD.GODLY_GIFT)) {
+                try { room.updateStatForm(); room.updateStatGraph(); } catch (e) { /* not on screen */ }
             }
         }
-        if (!formatId) return null;
+        // Even if the server returned no lists, this is still *our* PM.
+        // Keep the locally inferred tiers and do not expose the reply to chat.
+        entry.silent = false;
+        return true;
+    }
 
-        const entry = genericBanlists.get(formatId);
-        const sections = parseFormatSectionTokens(html, null);
-        if (!sections) return null;
-
-        if (!Object.keys(sections).length) return null;
-        entry.bans = parseBanSections(sections);
-        for (const tier of inferredTierBans(formatId).tiers) entry.bans.tiers.add(tier);
-        entry.merged = null;
-        entry.loaded = true;
-        if (isConvergenceMegamons(getActiveTeambuilderRoom()?.curTeam?.format) || isConvergenceMegamons(formatId)) {
-            convergenceIndexCache.clear();
-            convergenceMoveCache.clear();
+    function handleGenericBanlistRaw(html) {
+        if (!html) return false;
+        const waiting = pendingGenericEntries();
+        if (!waiting.length) return false;
+        const title = new DOMParser().parseFromString(html, 'text/html').querySelector('h2')?.textContent || '';
+        const normFmt = (id) => id.replace(/natdex/g, 'nationaldex');
+        const titleId = normFmt(fmtId(title));
+        let formatId = titleId ? waiting.find(([id]) => normFmt(id) === titleId)?.[0] : null;
+        if (!formatId && waiting.length === 1 && titleId) {
+            // Some formats use aliases, but same-generation alone is NOT a
+            // match (it could be another user's manual /tier command).
+            const [id] = waiting[0];
+            const registeredName = fmtId(window.BattleFormats?.[id]?.name);
+            if (registeredName && normFmt(registeredName) === titleId) formatId = id;
         }
-        console.log(LOG, `Loaded bans for ${title}`);
-
-
-        const suppress = entry.silent;
-        entry.silent = false; // later manual /tier replies show normally
-
-        const room = getTeambuilderRoom();
-        if (room?.search?.engine?.typedSearch) refreshSearch(room, {clearBase: true});
-        const engine = room?.search?.engine;
-        if (engine?.abilitySearch) clearSearchCache(engine.abilitySearch);
-        if (engine?.typedSearch?.searchType === 'ability') refreshSearch(room, {clearBase: true});
-        if (room?.curSet && getActiveMods(room).includes(MOD.GODLY_GIFT)) {
-            try { room.updateStatForm(); room.updateStatGraph(); } catch (e) { /* not on screen */ }
+        if (!formatId && waiting.length === 1 && !titleId && /<table\b/i.test(html)) {
+            // /formathelp may reply with a table when its search finds many
+            // matches, rather than a single format's <h2> heading.
+            formatId = waiting[0][0];
         }
-        return {suppress};
+        return formatId ? finishGenericBanlistReply(formatId, html) : false;
     }
 
     // First native ability (any slot) of `sp` that the format bans, else null.
@@ -1482,58 +1486,72 @@
         ['[Gen 9] Convergence', 'conv', parseConvergenceBanlist],
     ];
 
-    // Returns true if this /raw line is the reply to one of our silent requests.
-    function consumeRawLine(rawHtml) {
-        let suppress = false;
+    // Only intercept the console PM path (sender ~, recipient ~); the server
+    // uses |pm|~|~|/raw HTML for /tier and /formathelp. Ordinary PMs, room
+    // chat, battle messages, and manual tier requests must pass through.
+    // https://github.com/smogon/pokemon-showdown/blob/master/server/chat.ts
+    function scriptPendingBanlist() {
+        return Object.keys(BL).some(namedRequestPending) || pendingGenericEntries().length > 0;
+    }
 
+    function consumeRawLine(html) {
+        let suppress = false;
         for (const [header, key, parse] of RAW_HANDLERS) {
-            if (!rawHtml.includes(header)) continue;
-            parse(rawHtml);
-            if (BL[key].silent) {
-                BL[key].silent = false;
-                suppress = true;
+            if (!html.includes(header) || !namedRequestPending(key)) continue;
+            try { parse(html); } catch (e) { console.warn(LOG, `Failed to parse ${key} bans:`, e); }
+            BL[key].silent = false;
+            suppress = true;
+        }
+        if (!suppress) {
+            try {
+                if (handleGenericBanlistRaw(html)) suppress = true;
+            } catch (e) {
+                console.warn(LOG, 'Generic banlist parse failed:', e);
             }
         }
-
-        // Isolated so a bug here can never stop messages reaching the client.
-        try {
-            if (handleGenericBanlistRaw(rawHtml)?.suppress) suppress = true;
-        } catch (e) {
-            console.error(LOG, 'Generic banlist parse failed:', e);
-        }
-
         return suppress;
+    }
+
+    function consumeScriptServerPm(line) {
+        const match = /^\|pm\|([^|]*)\|([^|]*)\|([\s\S]*)$/.exec(line);
+        if (!match || match[1].trim() !== '~' || match[2].trim() !== '~') return false;
+        const message = match[3];
+        if (message.startsWith('/raw ')) return consumeRawLine(message.slice(5));
+
+        // /formathelp replies with /error when the requested format doesn't
+        // exist. These errors were the main source of phantom PM windows.
+        // Mark only one outstanding query as finished; don't hide any other PM.
+        if (/^\/error\s+(?:No matched formats found\.|No matched formats found|The format .* does not exist\.?)/i.test(message)) {
+            const generic = pendingGenericEntries();
+            if (generic.length) {
+                generic[0][1].silent = false;
+                return true;
+            }
+            const namedKey = Object.keys(BL).find(namedRequestPending);
+            if (namedKey) { BL[namedKey].silent = false; return true; }
+        }
+        return false;
+    }
+
+    // Remove the *entire* protocol PM line before Showdown creates the PM tab.
+    // This also works when several messages share a single WebSocket packet.
+    function filterSilentServerMessages(data) {
+        if (typeof data !== 'string' || !data.includes('|pm|') || !scriptPendingBanlist()) return data;
+        const parts = data.split('\n');
+        const kept = parts.filter((line) => !consumeScriptServerPm(line));
+        return kept.length === parts.length ? data : kept.join('\n');
     }
 
     function patchServerReceive() {
         return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
-                           function (data) {
-            let payload = data;
-
-            try {
-                if (typeof data === 'string' && data.includes('/raw ')) {
-                    let modified = false;
-
-                    const kept = data.split('\n').filter((line) => {
-                        const match = line.includes('/raw ') && line.match(/\/raw (.*)/s);
-                        if (!match) return true;
-
-                        const suppress = consumeRawLine(match[1]);
-                        if (suppress) modified = true;
-                        return !suppress;
-                    });
-
-                    if (modified) payload = kept.join('\n');
-                }
-            } catch (e) {
-                console.error(LOG, 'Failed to parse server data:', e);
-                payload = data;
+            function (data) {
+                let payload = data;
+                try { payload = filterSilentServerMessages(data); }
+                catch (e) { console.warn(LOG, 'Failed to filter banlist PM:', e); }
+                if (!payload || !payload.trim() || /^>[^\n]+\n?$/.test(payload)) return;
+                return original.call(this, payload);
             }
-
-            if (payload === '') return;
-            return original.call(this, payload);
-        }
-                          );
+        );
     }
 
     // Tier Shift AAA: ban list applied on top of the Gen 9 pool.
