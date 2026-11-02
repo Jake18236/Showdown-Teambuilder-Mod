@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      17.2.2
+// @version      17.2.4
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -882,6 +882,9 @@
         if (b.loaded || b.sent) return;
         if (!window.app || typeof app.send !== 'function') return;
 
+        // Install the receiver before sending: a fast server response must not
+        // arrive before the suppression hook has been attached.
+        patchServerReceive();
         b.sent = true;
         b.silent = true;
         b.sentAt = Date.now();
@@ -1074,10 +1077,17 @@
         // ability/item/move is banned; it is an independent rule.
 
         for (const token of sections.Unbans || []) {
+            const id = toID(token);
+            if (!id) continue;
+            // /formathelp is authoritative even if the local Dex has not yet
+            // learned a newly released Mega forme. Keep the raw rule ID so a
+            // later dex update will expose it without losing the server unban.
+            bans.unbanned.add(id);
             const sp = Dex.species.get(token);
-            if (!sp?.exists) continue;
-            bans.unbanned.add(sp.id);
-            if (bansWholeSpecies(token, sp)) bans.unbannedBase.add(sp.id);
+            if (sp?.exists) {
+                bans.unbanned.add(sp.id);
+                if (bansWholeSpecies(token, sp)) bans.unbannedBase.add(sp.id);
+            }
         }
 
         for (const token of [...(sections.Restricted || []), ...(sections.Restrictions || [])]) {
@@ -1366,10 +1376,13 @@
     function requestGenericBanlist(id) {
         let entry = genericBanlists.get(id);
         if (!entry) {
-            entry = {loaded: true, silent: false, bans: inferredTierBans(id)};
+            // The inferred bans are a temporary UI hint, not a complete RuleTable.
+            // Convergence must NOT treat this as verified donor legality.
+            entry = {loaded: true, verified: false, silent: false, bans: inferredTierBans(id)};
             genericBanlists.set(id, entry);
         }
         if (!entry.sentAt && window.app?.send) {
+            patchServerReceive();
             entry.sentAt = Date.now();
             entry.silent = true;
             app.send('/formathelp ' + id);
@@ -1397,10 +1410,12 @@
             for (const tier of inferredTierBans(formatId).tiers) entry.bans.tiers.add(tier);
             entry.merged = null;
             entry.loaded = true;
-            if (isConvergenceMegamons(getActiveTeambuilderRoom()?.curTeam?.format) || isConvergenceMegamons(formatId)) {
-                convergenceIndexCache.clear();
-                convergenceMoveCache.clear();
-            }
+            // Confirm that the actual server format's rules were received.
+            // A placeholder inferred tier list cannot establish which species
+            // may donate moves/abilities through Convergence.
+            entry.verified = true;
+            convergenceIndexCache.clear();
+            convergenceMoveCache.clear();
             const room = getTeambuilderRoom();
             if (room?.search?.engine?.typedSearch) refreshSearch(room, {clearBase: true});
             const engine = room?.search?.engine;
@@ -1486,10 +1501,14 @@
         ['[Gen 9] Convergence', 'conv', parseConvergenceBanlist],
     ];
 
-    // Only intercept the console PM path (sender ~, recipient ~); the server
-    // uses |pm|~|~|/raw HTML for /tier and /formathelp. Ordinary PMs, room
-    // chat, battle messages, and manual tier requests must pass through.
-    // https://github.com/smogon/pokemon-showdown/blob/master/server/chat.ts
+    // /tier and /formathelp replies are routed through the special PM target
+    // "~". Real server packets normally look like
+    //     |pm| userName|~|/raw <div ...>
+    // NOT necessarily |pm|~|~|/raw; the old matcher ignored the real packets.
+    // Check exactly one side is the ~ command target and only consume replies
+    // when a matching script-owned lookup is outstanding. Never block player
+    // PMs, room chat, manually requested /tier, or other protocol traffic.
+    // https://github.com/smogon/pokemon-showdown/blob/master/PROTOCOL.md
     function scriptPendingBanlist() {
         return Object.keys(BL).some(namedRequestPending) || pendingGenericEntries().length > 0;
     }
@@ -1514,7 +1533,14 @@
 
     function consumeScriptServerPm(line) {
         const match = /^\|pm\|([^|]*)\|([^|]*)\|([\s\S]*)$/.exec(line);
-        if (!match || match[1].trim() !== '~' || match[2].trim() !== '~') return false;
+        if (!match) return false;
+        // Pokemon Showdown uses the recipient "~" as its command-result PM box.
+        // The sender may be the logged-in user's displayed name (with rank and
+        // leading space), as in |pm| username|~|/raw ... . Some server/client
+        // variants reverse those positions, and older variants use ~ for both.
+        const sender = match[1].trim();
+        const receiver = match[2].trim();
+        if (sender !== '~' && receiver !== '~') return false;
         const message = match[3];
         if (message.startsWith('/raw ')) return consumeRawLine(message.slice(5));
 
@@ -2403,7 +2429,33 @@
     // the /formathelp reply is in flight.
     function getConvergenceGroup(dex, species, format) {
         const megamons = isConvergenceMegamons(format);
+        // Showdown's Convergence Legality uses RuleTable.isBannedSpecies for
+        // EACH donor, not merely the recipient. This includes Smeargle, whose
+        // Sketch-derived move search may otherwise expose essentially every
+        // move to Normal-types such as Arceus.
+        //
+        // Do not build/copy a donor pool from a placeholder inferred banlist:
+        // the named format's banlist may still be arriving via /formathelp.
+        // Fail closed until we have authoritative bans, while allowing the
+        // recipient's own native learnset to appear normally.
+        if (megamons) {
+            const baseId = genericBanFormatId(format);
+            const entry = baseId ? requestGenericBanlist(baseId) : null;
+            if (!entry?.verified) return [];
+        } else {
+            if (!convergenceBans) {
+                requestBanlist('conv');
+                return [];
+            }
+        }
         const explicitlyAllowed = megamons ? explicitlyUnbannedForms(format) : new Set();
+        // Showdown's convergencelegality also requires donors to be standard,
+        // unless +tag:<nonstandard category> explicitly permits that category.
+        // +Pokemon-Mega makes a forme selectable; it does NOT, by itself,
+        // enable Future/Past donors to transfer moves or abilities.
+        const allowedDonorTags = new Set(formatRuleTokens(format)
+            .filter((op) => op.kind === 'unban' && /^tag\s*:/i.test(op.name || ''))
+            .map((op) => toID(String(op.name).split(':').slice(1).join(':'))));
         const bans = megamons ? getMergedBansForFormat(format) : convergenceBans;
         const bannedIds = bans?.species || new Set();
         const bannedBases = bans?.baseSpecies || new Set();
@@ -2421,18 +2473,12 @@
                 // a Gen 9 battle. Their Pokédex generation is not an implicit
                 // ban once the challenge code explicitly unbans that forme.
                 if (sp.gen > dex.gen && !allowedByRule) continue;
-                if (megamons) {
-                    // Mega formes can be used as starting Pokémon. Normal
-                    // battle-only formes are also usable if available in Gen 9.
-                    // Never expose nonstandard historical formes unless unbanned.
-                    if (sp.isNonstandard && !allowedByRule &&
-                        !(fmtHas(String(format).split('@@@')[0], 'convergencemegamons') &&
-                          /mega/i.test(sp.forme || ''))) continue;
-                } else if (sp.battleOnly || sp.isNonstandard) continue;
+                // Match the simulator's Convergence donor gate: a specific
+                // +Mega unban does not bypass its isNonstandard tag check.
+                // Conversely, a genuinely standard/unbanned Mega can donate.
+                if (sp.isNonstandard && !allowedDonorTags.has(toID(sp.isNonstandard))) continue;
+                if (!megamons && sp.battleOnly) continue;
                 if (CONVERGENCE_EXCLUDED_DONORS.has(sp.id)) continue;
-                // Megamons Mega formes are recipients ONLY: they never contribute
-                // their own moves or abilities to another Pokémon's pool.
-                if (megamons && (sp.isMega || /-mega(?:-[a-z0-9]+)?$/i.test(sp.name))) continue;
                 // Explicit bans always take priority over the special form rule.
                 if (bannedIds.has(sp.id) || bannedBases.has(toID(sp.baseSpecies || sp.name))) {
                     if (!allowedByRule) continue;
@@ -3994,6 +4040,28 @@
         return cache.pools.get(format);
     }
 
+    // The native search does not parse custom rules or server-side /formathelp.
+    // For named Megamons formats, the whitelist only becomes available once the
+    // corresponding formathelp response is verified; for imported @@@ formats,
+    // explicit +Mega tokens are available immediately.
+    function megamonsLegalMegaIds(format, dex = window.Dex) {
+        if (!isConvergenceMegamons(format)) return new Set();
+        const bans = getMergedBansForFormat(format);
+        const allowed = new Set(explicitlyUnbannedForms(format));
+        if (bans) for (const id of bans.unbanned) allowed.add(id);
+        const result = new Set();
+        for (const id of allowed) {
+            if (!/-?mega(?:[a-z0-9]+)?$/.test(id)) continue;
+            const sp = dex?.species?.get(id);
+            if (!sp?.exists || !window.BattlePokedex?.[sp.id]) continue;
+            // This is a species/forme whitelist, not permission to use all
+            // nonstandard Pokemon or otherwise banned forms.
+            if (bans && isBannedByList(bans, sp)) continue;
+            result.add(sp.id);
+        }
+        return result;
+    }
+
     function patchPokemonSearchResults() {
         patchMethod(window.BattlePokemonSearch?.prototype, 'getBaseResults', '__qolUnbannedPoolPatched', (original) =>
             function () {
@@ -4002,16 +4070,17 @@
                 const bans = getMergedBansForFormat(format);
                 const isMegaConv = isConvergenceMegamons(format);
                 const explicit = isMegaConv ? explicitlyUnbannedForms(format) : new Set();
-                if (!explicit.size && !bans?.unbanned?.size && !bans?.unbannedBase?.size) return rows;
+                const legalMegas = megamonsLegalMegaIds(format, this.dex);
+                if (!legalMegas.size && !explicit.size && !bans?.unbanned?.size && !bans?.unbannedBase?.size) return rows;
                 const have = new Set(rows.filter((r) => r[0] === 'pokemon').map((r) => r[1]));
                 const extra = [];
                 for (const id of Object.keys(window.BattlePokedex || {})) {
                     const sp = this.dex.species.get(id);
                     if (!sp?.exists || have.has(id)) continue;
-                    const allowed = explicit.has(id) || bans?.unbanned?.has(id) ||
+                    const allowed = legalMegas.has(id) || explicit.has(id) || bans?.unbanned?.has(id) ||
                         bans?.unbannedBase?.has(toID(sp.baseSpecies || sp.name));
                     if (sp.gen > this.dex.gen && !allowed) continue;
-                    if (allowed) {
+                    if (allowed && (!bans || !isBannedByList(bans, sp))) {
                         extra.push(['pokemon', id]);
                     }
                 }
@@ -4034,6 +4103,17 @@
                 this.__qolProviderPools = null;
             }
             this.__qolProviderBans = getMergedBansForFormat(providerFormat);
+
+            // A named format's server reply can change its Mega legality AFTER
+            // the native search has computed baseResults/baseIllegalResults.
+            // Clear BOTH caches before calling its getResults, otherwise a
+            // newly legal Mega remains in the native "Illegal results" bucket.
+            const legalMegas = megamonsLegalMegaIds(providerFormat, this.dex);
+            const megaKey = `${providerFormat}|${[...legalMegas].sort().join(',')}`;
+            if (this.__qolMegamonsLegalKey !== megaKey) {
+                this.__qolMegamonsLegalKey = megaKey;
+                clearSearchCache(this);
+            }
 
             // Remember the active into/from chips for sort().
             const findChip = (kind) => {
@@ -10673,12 +10753,17 @@
         rule: parseChallengeRule,
         rules: (format = getActiveTeambuilderRoom()?.curTeam?.format) => formatRuleTokens(format),
         diagnoseMegamons: (format = getActiveTeambuilderRoom()?.curTeam?.format) => {
-            const unbans = [...explicitlyUnbannedForms(format)];
-            const megaIds = unbans.filter((id) => /mega/.test(id));
+            const bans = getMergedBansForFormat(format);
+            const unbans = new Set(explicitlyUnbannedForms(format));
+            if (bans) for (const id of bans.unbanned) unbans.add(id);
+            const megaIds = [...unbans].filter((id) => /mega/.test(id));
             const unknown = megaIds.filter((id) => !Dex.species.get(id)?.exists);
+            const entry = genericBanlists.get(genericBanFormatId(format));
+            const legal = megamonsLegalMegaIds(format, getActiveTeambuilderRoom()?.curTeam?.dex || Dex);
             return {format, active: isConvergenceMegamons(format), generation: formatGeneration(format),
+                serverBanlistVerified: !!entry?.verified,
                 megaUnbans: megaIds.length, recognizedMegas: megaIds.length - unknown.length,
-                missingFromClientDex: unknown, mods: modsFromFormatString(format)};
+                visibleLegalMegas: legal.size, missingFromClientDex: unknown, mods: modsFromFormatString(format)};
         },
         effectiveRules: (format = getActiveTeambuilderRoom()?.curTeam?.format) => {
             const state = explicitRuleState(format);
