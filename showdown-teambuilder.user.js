@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      17.2.4
+// @version      18.0.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -956,7 +956,11 @@
         if (!html || (header && !html.includes(header))) return null;
 
         const doc = new DOMParser().parseFromString(html, 'text/html');
+        // The official /formathelp HTML places <summary>Banlist/Ruleset</summary>
+        // directly against <b>Ruleset</b>. textContent otherwise becomes
+        // 'Banlist/RulesetRuleset - ...', so the old regexp misses EVERY rule.
         doc.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+        doc.querySelectorAll('summary, h2, hr, b').forEach((node) => node.before(doc.createTextNode('\n')));
         const text = doc.body.textContent || '';
 
         const re = /(^|[^A-Za-z])(Bans|Unbans|Restricted|Restrictions|Unrestricted|Ruleset|Rules|Custom Rules)\s+-\s+/g;
@@ -1033,7 +1037,8 @@
         const bans = {
             species: new Set(), baseSpecies: new Set(), tiers: new Set(),
             types: new Set(), teraTypes: new Set(),
-            unbanned: new Set(), unbannedBase: new Set(), abilities: new Set(),
+            unbanned: new Set(), unbannedBase: new Set(),
+            unbannedMoves: new Set(), unbannedAbilities: new Set(), unbannedItems: new Set(), abilities: new Set(),
             restricted: new Set(),
             restrictedBase: new Set(),
             restrictedAbilities: new Set(), // "*Comatose": only usable by Pokémon that natively have it
@@ -1079,11 +1084,21 @@
         for (const token of sections.Unbans || []) {
             const id = toID(token);
             if (!id) continue;
-            // /formathelp is authoritative even if the local Dex has not yet
-            // learned a newly released Mega forme. Keep the raw rule ID so a
-            // later dex update will expose it without losing the server unban.
-            bans.unbanned.add(id);
             const sp = Dex.species.get(token);
+            // Mega formes may be absent from the local Pokédex, even though the
+            // server explicitly legalizes them. Preserve those species tokens.
+            const isSpecies = sp?.exists || /-mega(?:-[a-z0-9]+)?$/i.test(token);
+            const typed = isSpecies ? null : classifyRuleToken(token);
+            // +Spore, +Arena Trap, +King's Rock, etc. are NOT species unbans.
+            // The server's Unbans section contains all these kinds of entries.
+            if (typed && typed.kind !== 'species') {
+                if (typed.kind === 'moves') bans.unbannedMoves.add(typed.id);
+                if (typed.kind === 'abilities') bans.unbannedAbilities.add(typed.id);
+                if (typed.kind === 'items') bans.unbannedItems.add(typed.id);
+                continue;
+            }
+            // Retain raw species IDs for formes not yet present in the client Dex.
+            bans.unbanned.add(id);
             if (sp?.exists) {
                 bans.unbanned.add(sp.id);
                 if (bansWholeSpecies(token, sp)) bans.unbannedBase.add(sp.id);
@@ -1179,8 +1194,11 @@
             if (!sp?.exists) {
                 const hit = classifyRuleToken(token);
                 if (hit) {
-                    if (sign === '-') bans[hit.kind].add(hit.id);
-                    else if (sign === '+') bans[hit.kind].delete(hit.id);
+                    const unbans = hit.kind === 'moves' ? bans.unbannedMoves :
+                        hit.kind === 'abilities' ? bans.unbannedAbilities :
+                        hit.kind === 'items' ? bans.unbannedItems : null;
+                    if (sign === '-') { bans[hit.kind].add(hit.id); unbans?.delete(hit.id); }
+                    else if (sign === '+') { bans[hit.kind].delete(hit.id); unbans?.add(hit.id); }
                     else if (RESTRICTED_KEY[hit.kind]) bans[RESTRICTED_KEY[hit.kind]].add(hit.id);
                 }
                 continue;
@@ -1206,44 +1224,76 @@
         return bans;
     }
 
-    // Expose straightforward clause bans in search results even when Showdown's
-    // client does not understand custom @@@ rules. Compound team restrictions
-    // still require the server's TeamValidator (never approximated as legal).
+    // Source: smogon/pokemon-showdown data/rulesets.ts, rule definitions.
+    // Named rulesets are expanded locally for UI display without requesting
+    // /formathelp for each individual clause (which created needless PMs).
+    const SHOWDOWN_RULE_INHERITANCE = Object.freeze({
+        standardag: ['Obtainable', 'Team Preview', 'HP Percentage Mod', 'Cancel Mod', 'Endless Battle Clause'],
+        standard: ['Standard AG', 'Sleep Clause Mod', 'Species Clause', 'Nickname Clause', 'OHKO Clause', 'Evasion Items Clause', 'Evasion Moves Clause'],
+        standardoms: ['Standard AG', 'Species Clause', 'Nickname Clause', 'OHKO Clause', 'Evasion Moves Clause', 'Overflow Stat Mod'],
+        standardnatdex: ['Standard AG', 'NatDex Mod', 'Species Clause', 'Nickname Clause', 'OHKO Clause', 'Evasion Clause', 'Sleep Clause Mod'],
+        standarddoubles: ['Standard AG', 'Species Clause', 'Nickname Clause', 'OHKO Clause', 'Evasion Moves Clause', 'Gravity Sleep Clause'],
+        evasionclause: ['Evasion Abilities Clause', 'Evasion Items Clause', 'Evasion Moves Clause'],
+    });
+    const SHOWDOWN_RULE_BANLIST = Object.freeze({
+        ohkoclause: {moves: ['fissure', 'guillotine', 'horndrill', 'sheercold']},
+        // Exact server banlist; do not infer from move.status because other
+        // sleep-related moves do not automatically fall under this clause.
+        sleepmovesclause: {moves: ['darkvoid', 'grasswhistle', 'hypnosis', 'lovelykiss', 'sing', 'sleeppowder', 'spore', 'yawn']},
+        evasionabilitiesclause: {abilities: ['sandveil', 'snowcloak']},
+        evasionitemsclause: {items: ['brightpowder', 'laxincense']},
+        evasionmovesclause: {moves: ['acupressure', 'doubleteam', 'minimize']},
+        accuracymovesclause: {moves: ['flash', 'kinesis', 'leaftornado', 'mirrorshot', 'mudbomb', 'mudslap', 'muddywater', 'nightdaze', 'octazooka', 'sandattack', 'smokescreen']},
+        cfzclause: {moves: ['10000000voltthunderbolt', 'aciddownpour', 'alloutpummeling', 'blackholeeclipse', 'bloomdoom', 'breakneckblitz', 'catastropika', 'clangoroussoulblaze', 'continentalcrush', 'corkscrewcrash', 'devastatingdrake', 'extremeevoboost', 'genesissupernova', 'gigavolthavoc', 'guardianofalola', 'hydrovortex', 'infernooverdrive', 'letssnuggleforever', 'lightthatburnsthesky', 'maliciousmoonsault', 'menacingmoonrazemaelstrom', 'neverendingnightmare', 'oceanicoperetta', 'pulverizingpancake', 'savagespinout', 'searingsunrazesmash', 'shatteredpsyche', 'sinisterarrowraid', 'soulstealing7starstrike', 'splinteredstormshards', 'stokedsparksurfer', 'subzeroslammer', 'supersonicskystrike', 'tectonicrage', 'twinkletackle']},
+    });
+
+    function resolveClauseRules(bans, format) {
+        const effective = new Set();
+        // /formathelp's ruleset supplies the named format's server-verified
+        // rules, and @@@ tokens supply overrides for imported formats.
+        // Inline custom rules are processed in order, never by substring.
+        const ops = [...(bans.ruleset || []), ...formatRuleTokens(format).map((op) => op.raw)];
+        const activate = (id, path = new Set()) => {
+            if (path.has(id)) return;
+            effective.add(id);
+            const children = SHOWDOWN_RULE_INHERITANCE[id];
+            if (children) for (const name of children) activate(toSearchId(name), new Set([...path, id]));
+        };
+        const deactivate = (id, path = new Set()) => {
+            if (path.has(id)) return;
+            effective.delete(id);
+            const children = SHOWDOWN_RULE_INHERITANCE[id];
+            if (children) for (const name of children) deactivate(toSearchId(name), new Set([...path, id]));
+        };
+        for (const token of ops) {
+            const op = parseChallengeRule(token);
+            if (!op || !['rule', 'value', 'replace', 'remove'].includes(op.kind)) continue;
+            if (op.kind === 'remove') deactivate(op.id);
+            else activate(op.id);
+        }
+        return effective;
+    }
+
+    // This is an editor overlay, not a substitute for Showdown's TeamValidator.
+    // Especially for team-wide/compound clauses, the server is authoritative.
     function addExplicitClauseBans(bans, format) {
         if (!bans) return bans;
-        const effective = new Set();
-        const base = [...(bans.ruleset || [])];
-        // This is only an overlay for *declared* rules; a native format can
-        // inherit more rules than /formathelp reports, so no negative inference.
-        for (const op of base.map(parseChallengeRule).filter(Boolean)) {
-            if (op.kind === 'remove') effective.delete(op.id);
-            else if (['rule', 'value', 'replace'].includes(op.kind)) effective.add(op.id);
+        const effective = resolveClauseRules(bans, format);
+        for (const id of effective) {
+            const lists = SHOWDOWN_RULE_BANLIST[id];
+            if (!lists) continue;
+            for (const [kind, entries] of Object.entries(lists)) {
+                const unbanned = kind === 'moves' ? bans.unbannedMoves :
+                    kind === 'items' ? bans.unbannedItems : bans.unbannedAbilities;
+                for (const moveId of entries) if (!unbanned?.has(moveId)) bans[kind].add(moveId);
+            }
         }
-        const has = (...ids) => ids.some((id) => effective.has(id));
-        if (has('ohkoclause')) for (const id of ['fissure', 'guillotine', 'horndrill', 'sheercold']) bans.moves.add(id);
-        if (has('sleepmovesclause')) for (const id of [
-            'spore', 'sleeppowder', 'hypnosis', 'sing', 'grasswhistle', 'lovelykiss',
-            'darkvoid', 'yawn', 'darkaura', 'scatterspore'
-        ]) {
-            const move = Dex.moves.get(id);
-            if (move?.exists && move.category === 'Status' &&
-                (move.status === 'slp' || move.volatileStatus === 'yawn')) bans.moves.add(move.id);
-        }
-        if (has('evasionabilitiesclause', 'evasionclause')) {
-            bans.abilities.add('sandveil'); bans.abilities.add('snowcloak');
-        }
-        if (has('evasionitemsclause', 'evasionclause')) {
-            bans.items.add('brightpowder'); bans.items.add('laxincense');
-        }
-        if (has('evasionmovesclause', 'evasionclause')) {
-            for (const id of ['doubleteam', 'minimize']) bans.moves.add(id);
-        }
-        if (has('zmoveclause', 'gemsclause')) {
-            for (const [itemKey, item] of Object.entries(window.BattleItems || {})) {
-                const id = toID(item?.id || itemKey);
-                if (!id) continue;
-                if (has('zmoveclause') && item?.zMove) bans.items.add(id);
-                if (has('gemsclause') && item?.isGem) bans.items.add(id);
+        if (effective.has('zmoveclause') || effective.has('gemsclause')) {
+            for (const [key, item] of Object.entries(window.BattleItems || {})) {
+                const id = toID(item?.id || key);
+                if (!id || bans.unbannedItems?.has(id)) continue;
+                if (effective.has('zmoveclause') && item?.zMove) bans.items.add(id);
+                if (effective.has('gemsclause') && item?.isGem) bans.items.add(id);
             }
         }
         return bans;
@@ -1277,7 +1327,10 @@
         for (const rule of [...entry.bans.ruleset, ...tokens]) {
             if (/^[!+*-]/.test(rule)) continue;
             const id = toID(rule);
-            if (removed.has(id) || !window.BattleFormats?.[id]) continue;
+            // Named rules/clause inheritance is handled by resolveClauseRules.
+            // They are not independent ladder formats; requesting /formathelp
+            // for every rule causes spurious PMs and unusable banlist caches.
+            if (removed.has(id) || RULE_CATALOG.has(id) || !window.BattleFormats?.[id]) continue;
             const inherited = getMergedBansForFormat(id, new Set(seen));
             if (!inherited) continue;
             for (const key of Object.keys(merged)) {
@@ -1350,7 +1403,8 @@
         return {
             species: new Set(), baseSpecies: new Set(), tiers: new Set(),
             types: new Set(), teraTypes: new Set(),
-            unbanned: new Set(), unbannedBase: new Set(), abilities: new Set(),
+            unbanned: new Set(), unbannedBase: new Set(),
+            unbannedMoves: new Set(), unbannedAbilities: new Set(), unbannedItems: new Set(), abilities: new Set(),
             restricted: new Set(), restrictedBase: new Set(), restrictedAbilities: new Set(),
             abilityCombos: new Set(), ruleset: [],
             moves: new Set(), items: new Set(), restrictedMoves: new Set(), restrictedItems: new Set(),
@@ -1381,7 +1435,7 @@
             entry = {loaded: true, verified: false, silent: false, bans: inferredTierBans(id)};
             genericBanlists.set(id, entry);
         }
-        if (!entry.sentAt && window.app?.send) {
+        if (!entry.sentAt && !entry.verified && window.app?.send) {
             patchServerReceive();
             entry.sentAt = Date.now();
             entry.silent = true;
@@ -1401,34 +1455,58 @@
         return !!entry?.silent && !!entry.sentAt && Date.now() - entry.sentAt < SILENT_BANLIST_TIMEOUT;
     };
 
+    function cacheGenericBanlistReply(formatId, html) {
+        const sections = parseFormatSectionTokens(html, null);
+        if (!sections || !Object.keys(sections).length) return false;
+        const entry = genericBanlists.get(formatId) || {loaded: false, verified: false};
+        entry.bans = parseBanSections(sections);
+        for (const tier of inferredTierBans(formatId).tiers) entry.bans.tiers.add(tier);
+        entry.merged = null;
+        entry.loaded = true;
+        entry.verified = true;
+        entry.silent = false;
+        genericBanlists.set(formatId, entry);
+        convergenceIndexCache.clear();
+        convergenceMoveCache.clear();
+        const room = getTeambuilderRoom();
+        const engine = room?.search?.engine;
+        for (const search of [engine?.typedSearch, engine?.moveSearch, engine?.abilitySearch]) {
+            if (search) clearSearchCache(search);
+        }
+        if (engine) refreshSearch(room, {clearBase: true});
+        if (room?.curSet && getActiveMods(room).includes(MOD.GODLY_GIFT)) {
+            try { room.updateStatForm?.(); room.updateStatGraph?.(); } catch (e) { /* not on screen */ }
+        }
+        return true;
+    }
+
     function finishGenericBanlistReply(formatId, html) {
         const entry = genericBanlists.get(formatId);
         if (!entry?.silent) return false;
-        const sections = parseFormatSectionTokens(html, null);
-        if (sections && Object.keys(sections).length) {
-            entry.bans = parseBanSections(sections);
-            for (const tier of inferredTierBans(formatId).tiers) entry.bans.tiers.add(tier);
-            entry.merged = null;
-            entry.loaded = true;
-            // Confirm that the actual server format's rules were received.
-            // A placeholder inferred tier list cannot establish which species
-            // may donate moves/abilities through Convergence.
-            entry.verified = true;
-            convergenceIndexCache.clear();
-            convergenceMoveCache.clear();
-            const room = getTeambuilderRoom();
-            if (room?.search?.engine?.typedSearch) refreshSearch(room, {clearBase: true});
-            const engine = room?.search?.engine;
-            if (engine?.abilitySearch) clearSearchCache(engine.abilitySearch);
-            if (engine?.typedSearch?.searchType === 'ability') refreshSearch(room, {clearBase: true});
-            if (room?.curSet && getActiveMods(room).includes(MOD.GODLY_GIFT)) {
-                try { room.updateStatForm(); room.updateStatGraph(); } catch (e) { /* not on screen */ }
-            }
-        }
-        // Even if the server returned no lists, this is still *our* PM.
-        // Keep the locally inferred tiers and do not expose the reply to chat.
-        entry.silent = false;
+        // Unrecognized responses still belong to the script, but they must
+        // not incorrectly mark a placeholder banlist as server-verified.
+        if (!cacheGenericBanlistReply(formatId, html)) entry.silent = false;
         return true;
+    }
+
+    // /formathelp can also be shown in room chat as |c|~|/raw, as in the
+    // user's Alphabet Cup log. Learn its rules without removing that message
+    // or creating a hidden /formathelp request. Only accept the exact active
+    // format title; never import unrelated room chatter into the team rules.
+    function observePublicFormatHelp(packet) {
+        if (typeof packet !== 'string' || !packet.includes('/raw')) return;
+        const active = getActiveTeambuilderRoom()?.curTeam?.format;
+        const id = fmtId(String(active || '').split('@@@')[0]);
+        if (!id) return;
+        for (const line of packet.split('\n')) {
+            const match = /^(?:\|c\|~\|\/raw |\|raw\|)(<div[\s\S]*)/.exec(line);
+            if (!match) continue;
+            const html = match[1];
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const title = doc.querySelector('h2')?.textContent || '';
+            if (fmtId(title) !== id) continue;
+            cacheGenericBanlistReply(id, html);
+        }
     }
 
     function handleGenericBanlistRaw(html) {
@@ -1572,6 +1650,7 @@
         return patchMethod(window.app, 'receive', '__qolPatched', (original) =>
             function (data) {
                 let payload = data;
+                try { observePublicFormatHelp(data); } catch (e) { console.warn(LOG, 'Formathelp observer failed:', e); }
                 try { payload = filterSilentServerMessages(data); }
                 catch (e) { console.warn(LOG, 'Failed to filter banlist PM:', e); }
                 if (!payload || !payload.trim() || /^>[^\n]+\n?$/.test(payload)) return;
@@ -2628,35 +2707,72 @@
     // ---------- Alphabet Cup ----------
 
     const ALPHABET_CUP_FORMAT_ID = 'alphabetcup';
+    // The same Dex is shared between normal and custom-rule/National Dex formats.
+    // NEVER cache the move pool solely by Dex: whether "Past" moves exist is
+    // determined by the active RuleTable (not by an object's .exists field).
     const alphabetCupCache = new WeakMap();
+    const moveProviderFormat = (search) =>
+        getActiveTeambuilderRoom()?.curTeam?.format || search?.format || '';
 
-    // Per-dex: eligible move ids grouped by first letter, plus a cache of each species' letters.
-    function getAlphabetCupCache(dex) {
-        let cache = alphabetCupCache.get(dex);
+    // Mirror the Showdown validator's generation/existence gate *before*
+    // applying an OM movepool rule. Alphabet Cup and STABmons both check
+    // move.isNonstandard === 'Past' && !ruleTable.has('natdexmod'), plus
+    // isZ/isMax/restricted. See data/rulesets.ts in smogon/pokemon-showdown.
+    // Explicit custom unbans can override a move/tag, but a move introduced in
+    // a future generation can't be simulated in an older Dex.
+    const moveFormatRuleCache = new Map();
+    function moveFormatRules(format) {
+        const key = String(format || '');
+        const existing = moveFormatRuleCache.get(key);
+        if (existing) return existing;
+        const tokens = formatRuleTokens(key);
+        const unbans = new Set(tokens.filter((op) => op.kind === 'unban').map((op) => op.id));
+        const result = {natdex: isNationalDexFormat(key), lgpe: /^gen7letsgo/.test(fmtId(key.split('@@@')[0])), unbans};
+        // Imported codes can be very long, but only a few are edited at once.
+        if (moveFormatRuleCache.size >= 40) moveFormatRuleCache.delete(moveFormatRuleCache.keys().next().value);
+        moveFormatRuleCache.set(key, result);
+        return result;
+    }
+    function moveAllowedByGeneration(dex, move, format = '') {
+        if (!move?.exists || !move.id || move.isZ || move.isMax) return false;
+        if (Number.isFinite(move.gen) && move.gen > dex.gen) return false;
+        const tag = move.isNonstandard;
+        if (!tag || tag === 'Unobtainable') return true; // OM Unobtainable Moves may allow the latter.
+        const {natdex, lgpe, unbans} = moveFormatRules(format);
+        const explicit = unbans.has(move.id) || unbans.has('move' + move.id) ||
+            unbans.has(toSearchId(tag)) || unbans.has('tag' + toSearchId(tag));
+        if (tag === 'Past') return natdex || explicit;
+        if (tag === 'LGPE') return lgpe || explicit;
+        if (tag === 'Future') return explicit;
+        // CAP/Let's Go/Legends/Gmax/etc. are not ordinary game moves.
+        return explicit;
+    }
+
+    // Reuse the eligibility pool across Alphabet Cup, !Obtainable Moves,
+    // Sketchmons, and Typemons, while keeping their independent legality rules.
+    function getAlphabetCupCache(dex, format = '') {
+        let caches = alphabetCupCache.get(dex);
+        if (!caches) { caches = new Map(); alphabetCupCache.set(dex, caches); }
+        const key = String(format || '');
+        let cache = caches.get(key);
         if (cache) return cache;
-
         cache = {byLetter: new Map(), ids: new Set(), letters: new Map()};
-
         for (const id of Object.keys(window.BattleMovedex || {})) {
             const move = dex.moves.get(id);
-            if (!move?.exists || move.id !== id) continue;
-            if (move.isZ || move.isMax || move.isNonstandard === 'CAP') continue;
-
-            const letter = move.name.charAt(0).toLowerCase();
+            if (move?.id !== id || !moveAllowedByGeneration(dex, move, format)) continue;
+            const letter = move.id.charAt(0);
             if (!/[a-z]/.test(letter)) continue;
-
             cache.ids.add(id);
             if (!cache.byLetter.has(letter)) cache.byLetter.set(letter, []);
             cache.byLetter.get(letter).push(id);
         }
-
-        alphabetCupCache.set(dex, cache);
+        caches.set(key, cache);
         return cache;
     }
 
     // First letter of the species' name and of every pre-evolution's name.
-    function alphabetCupLetters(dex, species) {
-        const cache = getAlphabetCupCache(dex);
+    function alphabetCupLetters(dex, species, format = '') {
+        const cache = getAlphabetCupCache(dex, format);
         let letters = cache.letters.get(species.id);
         if (letters) return letters;
 
@@ -2666,28 +2782,31 @@
 
         while (cur?.exists && !seen.has(cur.id)) {
             seen.add(cur.id);
-            const ch = cur.name.charAt(0).toLowerCase();
+            const ch = cur.id.charAt(0);
             if (/[a-z]/.test(ch)) letters.add(ch);
-            cur = cur.prevo ? dex.species.get(cur.prevo) : null;
+            // Silvally forms have Type: Null as an evolutionary predecessor in
+            // the simulator's Alphabet Cup legality rule.
+            const prevo = cur.changesFrom === 'Silvally' ? 'Type: Null' : cur.prevo;
+            cur = prevo ? dex.species.get(prevo) : null;
         }
 
         cache.letters.set(species.id, letters);
         return letters;
     }
 
-    function alphabetCupMoveIds(dex, species) {
-        const cache = getAlphabetCupCache(dex);
+    function alphabetCupMoveIds(dex, species, format = '') {
+        const cache = getAlphabetCupCache(dex, format);
         const ids = [];
-        for (const letter of alphabetCupLetters(dex, species)) {
+        for (const letter of alphabetCupLetters(dex, species, format)) {
             ids.push(...(cache.byLetter.get(letter) || []));
         }
         return ids;
     }
 
-    function alphabetCupCanLearn(dex, species, moveId) {
+    function alphabetCupCanLearn(dex, species, moveId, format = '') {
         const move = dex.moves.get(moveId);
-        if (!move?.exists || !getAlphabetCupCache(dex).ids.has(move.id)) return false;
-        return alphabetCupLetters(dex, species).has(move.name.charAt(0).toLowerCase());
+        if (!moveAllowedByGeneration(dex, move, format) || !getAlphabetCupCache(dex, format).ids.has(move.id)) return false;
+        return alphabetCupLetters(dex, species, format).has(move.id.charAt(0));
     }
 
     // Native learnset check OR Alphabet Cup letter rule (used by Pokémon search filters).
@@ -2719,11 +2838,12 @@
                 return native || (mods.includes(MOD.ALMOST_ANY_ABILITY) && allAbilityIds(ctx.dex).includes(id));
             }
             if (bans?.moves?.has(id)) return false;
+            if (!moveAllowedByGeneration(ctx.dex, ctx.dex.moves.get(id), format)) return false;
             if (native) return true;
             if (bans?.restrictedMoves?.has(id)) return false;
-            if (mods.includes(MOD.STABMONS) && stabmonsCanLearn(ctx.dex, species, id, isNationalDexFormat(format))) return true;
-            if (mods.includes(MOD.ALPHABET_CUP) && alphabetCupCanLearn(ctx.dex, species, id)) return true;
-            return getAlphabetCupCache(ctx.dex).ids.has(id) &&
+            if (mods.includes(MOD.STABMONS) && stabmonsCanLearn(ctx.dex, species, id, isNationalDexFormat(format), format)) return true;
+            if (mods.includes(MOD.ALPHABET_CUP) && alphabetCupCanLearn(ctx.dex, species, id, format)) return true;
+            return getAlphabetCupCache(ctx.dex, format).ids.has(id) &&
                 (mods.includes(MOD.ALL_MOVES) || (mods.includes(MOD.TYPEMONS) && ctx.__qolTypemons === ctx.dex.moves.get(id).type));
         }
         const Search = kind === 'move' ? window.BattleMoveSearch : window.BattleAbilitySearch;
@@ -2741,13 +2861,14 @@
             !(probe.__qolGroups || []).some((group) => group.kind === kind && group.test(r[1])))
             .map((r) => r[1]));
         cache.set(cacheKey, ids);
-        return ids.has(toID(target));
+        return ids.has(toID(target)) && (kind !== 'move' ||
+            moveAllowedByGeneration(ctx.dex, ctx.dex.moves.get(id), format));
     }
 
     const stabmonsTypeCache = new WeakMap();
-    function stabmonsCanLearn(dex, species, id, natdex) {
+    function stabmonsCanLearn(dex, species, id, natdex, format = '') {
         const move = dex.moves.get(id);
-        if (!species?.exists || !species.name || !move?.exists || move.gen > dex.gen || move.isZ || move.isMax || move.isNonstandard === 'CAP') return false;
+        if (!species?.exists || !species.name || !moveAllowedByGeneration(dex, move, format)) return false;
         let cache = stabmonsTypeCache.get(dex);
         if (!cache) stabmonsTypeCache.set(dex, cache = new Map());
         const key = `${species.id}|${natdex}|${move.gen}`;
@@ -2794,7 +2915,7 @@
         const natdex = isNationalDexFormat(getActiveTeambuilderRoom()?.curTeam?.format || search.format);
         const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
         const additions = Object.keys(window.BattleMovedex || {}).filter((id) =>
-            !have.has(id) && stabmonsCanLearn(search.dex, species, id, natdex));
+            !have.has(id) && stabmonsCanLearn(search.dex, species, id, natdex, moveProviderFormat(search)));
         return addMovesToResults(search, results, species, additions);
     }
 
@@ -2805,7 +2926,7 @@
         const species = search.dex.species.get(search.species);
         if (!species?.exists) return results;
 
-        return addMovesToResults(search, results, species, alphabetCupMoveIds(search.dex, species));
+        return addMovesToResults(search, results, species, alphabetCupMoveIds(search.dex, species, moveProviderFormat(search)));
     }
 
     // ---------- Camove Chaos: every move is legal ----------
@@ -2820,7 +2941,7 @@
         if (!species?.exists) return results;
 
         const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
-        const add = [...getAlphabetCupCache(search.dex).ids].filter((id) => !have.has(id));
+        const add = [...getAlphabetCupCache(search.dex, moveProviderFormat(search)).ids].filter((id) => !have.has(id));
         return add.length ? addMovesToResults(search, results, species, add) : results;
     }
 
@@ -2839,7 +2960,7 @@
         const selected = (search.set?.moves || []).map((move) => toID(move)).filter(Boolean);
         if (selected.some((move) => !legalPool.has(move))) return results;
 
-        const extras = [...getAlphabetCupCache(search.dex).ids].filter((id) => !legalPool.has(id));
+        const extras = [...getAlphabetCupCache(search.dex, moveProviderFormat(search)).ids].filter((id) => !legalPool.has(id));
         return extras.length ? addMovesToResults(search, results, species, extras) : results;
     }
 
@@ -2885,7 +3006,7 @@
         if (!type) return results;
 
         const have = new Set(results.filter((r) => r[0] === 'move').map((r) => r[1]));
-        const add = [...getAlphabetCupCache(search.dex).ids].filter((id) =>
+        const add = [...getAlphabetCupCache(search.dex, moveProviderFormat(search)).ids].filter((id) =>
                                                                     !have.has(id) && search.dex.moves.get(id).type === type);
         return add.length ? addMovesToResults(search, results, species, add) : results;
     }
@@ -2898,7 +3019,7 @@
     function natdexMoveIds(dex, species) {
         const T = window.BattleTeambuilderTable || {};
         const tables = [T.learnsets];
-        for (let g = 1; g <= 9; g++) tables.push(T['gen' + g]?.learnsets);
+        for (let g = 1; g <= Math.max(1, dex.gen); g++) tables.push(T['gen' + g]?.learnsets);
 
         // species + base formes + battleOnly sources + every pre-evolution
         const keys = [];
@@ -2932,7 +3053,7 @@
 
             const exists = move?.exists || !!raw.num;
 
-            if (!exists) return false;
+            if (!exists || (move?.gen ?? raw.gen ?? 0) > dex.gen) return false;
 
             // Prefer the Dex data, but use raw data for old moves that aren't
             // represented by the current Gen 9 Dex.
@@ -3050,7 +3171,7 @@
         ids = [];
         for (const id of Object.keys(window.BattleAbilities || {})) {
             const ability = dex.abilities.get(id);
-            if (ability?.exists && ability.id === id && !ability.isNonstandard && id !== 'noability') ids.push(id);
+            if (ability?.exists && ability.id === id && (!ability.gen || ability.gen <= dex.gen) && !ability.isNonstandard && id !== 'noability') ids.push(id);
         }
         ids.sort((a, b) => dex.abilities.get(a).name.localeCompare(dex.abilities.get(b).name));
         allAbilityCache.set(dex, ids);
@@ -3422,7 +3543,14 @@
                 nativeBySpecies.set(key, rows);
                 return rows;
             };
-            return moveBannedMovesToHeader(this, runProviderChain(MOVE_PROVIDERS, this, nativeRows), nativeRows);
+            // A provider may augment a native list with otherwise existing but
+            // wrong-generation moves. Enforce the same game-generation boundary
+            // for the final picker, not only the per-provider caches.
+            const format = moveProviderFormat(this);
+            const rows = runProviderChain(MOVE_PROVIDERS, this, nativeRows);
+            const eligible = rows.filter((row) => row[0] !== 'move' ||
+                moveAllowedByGeneration(this.dex, this.dex.moves.get(row[1]), format));
+            return moveBannedMovesToHeader(this, eligible, nativeRows);
         }
                           );
     }
@@ -4219,7 +4347,7 @@
         return [...ids].filter((id) => {
             const move = dex.moves.get(id);
             const raw = window.BattleMovedex?.[id] || {};
-            if (!move?.exists && !raw.num) return false;
+            if ((!move?.exists && !raw.num) || (move?.gen ?? raw.gen ?? 0) > dex.gen) return false;
             // Fortemons uses damaging moves; its legality rules handle bans.
             if ((move?.category || raw.category) === 'Status') return false;
             const nonstandard = move?.isNonstandard ?? raw.isNonstandard;
@@ -10718,6 +10846,23 @@
     window.qolFormat = {
         import: (text, room = getActiveTeambuilderRoom()) => importFormatText(room, text),
         bans: (room = getActiveTeambuilderRoom()) => getMergedBans(room),
+        // Useful when the move search and Showdown's /formathelp disagree.
+        // Explicit bans and restricted moves are separate categories.
+        checkMove: (moveName, room = getActiveTeambuilderRoom()) => {
+            const format = room?.curTeam?.format || '';
+            const dex = room?.curTeam?.dex || Dex;
+            const move = dex.moves.get(moveName);
+            if (!move?.exists) return {format, error: `Unknown move: ${moveName}`};
+            const bans = getMergedBansForFormat(format);
+            const entry = genericBanlists.get(genericBanFormatId(format));
+            return {format, move: move.name, generation: dex.gen,
+                serverBanlistVerified: !!entry?.verified,
+                generationAllowed: moveAllowedByGeneration(dex, move, format),
+                banned: !!bans?.moves?.has(move.id),
+                restricted: !!bans?.restrictedMoves?.has(move.id),
+                activeRules: bans ? [...resolveClauseRules(bans, format)] : [],
+            };
+        },
         // Shows basic custom clause implications, but simulator validation is authoritative.
         clauseBans: (room = getActiveTeambuilderRoom()) => {
             const bans = getMergedBans(room);
@@ -10767,7 +10912,11 @@
         },
         effectiveRules: (format = getActiveTeambuilderRoom()?.curTeam?.format) => {
             const state = explicitRuleState(format);
-            return {active: [...state.active.values()], removed: [...state.removed], generation: formatGeneration(format)};
+            const bans = getMergedBansForFormat(format);
+            const entry = genericBanlists.get(genericBanFormatId(format));
+            return {active: [...state.active.values()], removed: [...state.removed],
+                resolved: bans ? [...resolveClauseRules(bans, format)] : [],
+                serverBanlistVerified: !!entry?.verified, generation: formatGeneration(format)};
         },
         catalog: () => [...RULE_CATALOG.values()].map((rule) => ({...rule})),
         // These are client-side preview providers, not a complete simulator.
