@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      18.0.0
+// @version      19.0
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -2265,6 +2265,66 @@
         return types[0] === types[1] ? [types[0]] : types.filter(Boolean);
     }
 
+    // A restricted Cross Evolution species is legal as an ordinary base, but
+    // the server rejects it as the nicknamed donor (see config/formats.ts).
+    // Explicitly banned species cannot be donors either.
+    function crossEvolutionDonorAllowed(dex, donor, format = getActiveTeambuilderRoom()?.curTeam?.format || '') {
+        if (!donor?.exists || donor.battleOnly || !donor.prevo || donor.gen > dex.gen) return false;
+        const bans = format ? getMergedBansForFormat(format) : null;
+        if (bans && (isBannedByList(bans, donor) ||
+            bans.restricted.has(donor.id) ||
+            bans.restrictedBase.has(toID(donor.baseSpecies || donor.name)))) return false;
+        // Match Cross Evolution's validator: outside NatDex, Past/Future
+        // species cannot be nickname donors, nor unreleased evolutions.
+        const rules = bans && resolveClauseRules(bans, format);
+        const natdex = isNationalDexFormat(format) || !!rules?.has('natdexmod');
+        if (donor.isNonstandard === 'Future' ||
+            (donor.isNonstandard === 'Past' && !natdex) ||
+            (donor.isNonstandard === 'CAP' && !rules?.has('+tag:cap'))) return false;
+        if (donor.tier === 'Unreleased' && donor.isNonstandard === 'Unobtainable' &&
+            !/(?:^|,)\s*\+\s*unobtainable\s*(?:,|$)/i.test(String(format).split('@@@').slice(1).join(','))) return false;
+        return true;
+    }
+
+    // 1 = unevolved (Pikachu), 2 = evolved once (Clodsire),
+    // 3 = evolved twice (Charizard). A missing/cyclic prevo is not an evo.
+    function crossEvolutionStage(dex, species) {
+        if (!species?.exists) return 0;
+        let stage = 1;
+        const seen = new Set([species.id]);
+        let prev = species.prevo;
+        while (prev && stage < 4) {
+            const mon = dex.species.get(prev);
+            if (!mon?.exists || seen.has(mon.id)) return 0;
+            seen.add(mon.id);
+            stage++;
+            prev = mon.prevo;
+        }
+        return stage;
+    }
+
+    // Showdown /showevo semantics: display an evolution's *delta* from
+    // its direct pre-evolution, not the evolved species' finished stats.
+    function crossEvolutionDelta(dex, species) {
+        const stage = crossEvolutionStage(dex, species);
+        if ((stage !== 2 && stage !== 3) || species.battleOnly) return null;
+        const prevo = dex.species.get(species.prevo);
+        if (!prevo?.exists) return null;
+        const stats = {};
+        for (const stat of STATS) stats[stat] = species.baseStats[stat] - prevo.baseStats[stat];
+        const types = [];
+        if (species.types[0] !== prevo.types[0]) types[0] = species.types[0];
+        if (species.types[1] !== prevo.types[1]) types[1] = species.types[1] || species.types[0];
+        // Preserve which type *slot* changed. Gyarados gains Flying in slot
+        // two, while Vaporeon changes the primary slot to Water.
+        const changedTypes = [...new Set(types.filter(Boolean))];
+        return {stage, stats, types: changedTypes, typeSlots: [types[0] || null, types[1] || null], bst: sumStats(stats)};
+    }
+
+    function isCrossEvolutionDonorFilter(engine) {
+        return ['ce', 'stage2', 'stage3'].some((kind) => !!getIntoFilterId(engine, kind));
+    }
+
     // Cross-evolved / fused view of `speciesLike` as if nicknamed after
     // `targetId`, or null if that isn't legal. Used by the "into" filters.
     function crossEvolveView(dex, speciesLike, targetId) {
@@ -2297,7 +2357,7 @@
         }
 
         const ce = resolveCrossEvolution(dex, set);
-        if (!ce) return null;
+        if (!ce || !crossEvolutionDonorAllowed(dex, ce.cross)) return null;
 
         return {
             baseStats: computeModsBaseStats(mods, {dex, set}) || crossEvolutionBaseStats(dex, set),
@@ -2354,6 +2414,19 @@
         const dex = room.curTeam?.dex;
         if (!engine) return {val, nickname: null};
 
+        if (isCrossEvolutionDonorFilter(engine) &&
+            getActiveMods(room).includes(MOD.CROSS_EVOLUTION) && room.curSet?.species) {
+            const candidate = dex?.species?.get(val);
+            const source = dex?.species?.get(room.curSet.species);
+            const pair = candidate?.exists && source?.exists
+                ? resolveCrossEvolution(dex, {species: source.name, name: candidate.name}) : null;
+            if (pair && crossEvolutionDonorAllowed(dex, candidate)) {
+                return {val: source.name, nickname: candidate.name};
+            }
+            // A restricted or wrong-stage donor must never become a nickname.
+            return {val: source?.name || val, nickname: null};
+        }
+
         const intoId = getIntoFilterId(engine, 'into');
         if (intoId) {
             // "into X": the clicked mon is the base, X is the nickname.
@@ -2373,68 +2446,85 @@
 
     // ---------- live refresh when the nickname changes ----------
 
-    let fusionRefreshFrame = null;
-    let fusionLastNickname = null;
+    // Each teambuilder room has its own scheduled render. Tracking the set identity
+    // (rather than only the text) is important: two different Pokémon can both
+    // be nicknamed Charizard and must each get a fresh preview.
+    const fusionRefreshPending = new WeakMap();
+    const fusionLastRendered = new WeakMap();
 
-    // Refresh type icons + base stat column as soon as the nickname changes.
+    // The old client saves nicknames on `change` (blur), not `input`. For
+    // nickname-driven OMs, update the in-memory set on each keystroke so ALL
+    // stat, type, and provider calculations see the same species/donor. Native
+    // `nicknameChange` still handles persistence on blur; this does not save
+    // or rebuild the editor (which would destroy the focused input).
     function refreshFusionSet(room, nicknameOverride = null) {
-        if (!room) return;
-        const mods = getActiveMods(room);
-        if (!mods.some(isFusionMod)) return;
+        const set = room?.curSet;
+        const dex = room?.curTeam?.dex;
+        if (!set?.species || !dex || !getActiveMods(room).some(isFusionMod)) return;
 
-        const set = room.curSet;
-        const dex = room.curTeam?.dex;
-        if (!set?.species || !dex) return;
+        const name = nicknameOverride === null ? String(set.name || '').trim()
+            : String(nicknameOverride).trim().replace(/\|/g, '');
+        set.name = name;
 
-        // While typing, Showdown may not have committed the nickname to
-        // curSet.name yet, so use the input's value via a temporary set.
-        const name = nicknameOverride !== null ? nicknameOverride.trim() : String(set.name || '').trim();
-        const liveSet = name === set.name ? set : Object.assign({}, set, {name});
+        refreshTypeIcons(room);
 
-        const baseTypes = dex.species.get(set.species)?.types || [];
-        const types = modifiedTypes(mods, dex, liveSet) || baseTypes;
-
-        room.$('.setcell-typeicons').html(typeIconsHtml(types));
-
-        // updateStatForm()/updateStatGraph() read curSet, so swap in the live one.
-        const originalSet = room.curSet;
-        room.curSet = liveSet;
+        // Showdown's updateStatForm REPLACES the whole current chooser with
+        // a stats form. Only call it if that chooser is actually on the Stats
+        // tab; updateStatGraph alone updates the visible stat badge elsewhere.
+        // Avoid a full room.update(): that replaces the nickname input, too.
         try {
-            room.updateStatForm();
-            room.updateStatGraph();
-        } finally {
-            room.curSet = originalSet;
+            if (room.curChartType === 'stats') room.updateStatForm?.();
+            room.updateStatGraph?.();
+        } catch (err) {
+            console.warn(LOG, 'Live fusion stat refresh failed:', err);
         }
 
+        // Move/ability legality can change with the fusion donor. Invalidate
+        // all three search instances, including the active typed search, and
+        // force a fresh query without resetting its text or stealing focus.
         const engine = room.search?.engine;
-        if (engine) {
-            for (const search of [engine.moveSearch, engine.abilitySearch]) {
-                if (!search) continue;
-                search.__qolFusionKey = null;
-                clearSearchCache(search);
-            }
+        if (!engine) return;
+        for (const search of new Set([engine.typedSearch, engine.moveSearch, engine.abilitySearch])) {
+            if (!search) continue;
+            search.__qolFusionKey = null;
+            clearSearchCache(search);
         }
-        refreshSearchUi(room);
+        engine.results = null;
+        if (room.curChartType === 'move' || room.curChartType === 'abilities' || room.curChartType === 'ability') {
+            try {
+                const current = room.$?.('input[name=' + room.curChartName + ']')?.val?.();
+                room.search.find?.(current === undefined ? '' : current);
+            } catch (err) {
+                console.warn(LOG, 'Live fusion search refresh failed:', err);
+            }
+            refreshSearchUi(room);
+        }
     }
 
     function scheduleFusionRefresh(room, nickname = null) {
-        if (!room) return;
-        if (fusionRefreshFrame !== null) cancelAnimationFrame(fusionRefreshFrame);
+        const set = room?.curSet;
+        if (!set || !getActiveMods(room).some(isFusionMod)) return;
+        const name = nickname === null ? String(set.name || '').trim()
+            : String(nickname).trim().replace(/\|/g, '');
+        const format = room.curTeam?.format;
+        const previous = fusionRefreshPending.get(room);
+        if (previous) cancelAnimationFrame(previous.frame);
 
-        fusionRefreshFrame = requestAnimationFrame(() => {
-            fusionRefreshFrame = null;
+        const pending = {set, name, format, frame: null};
+        pending.frame = requestAnimationFrame(() => {
+            if (fusionRefreshPending.get(room) !== pending) return;
+            fusionRefreshPending.delete(room);
+            if (getActiveTeambuilderRoom() !== room || room.curSet !== set ||
+                room.curTeam?.format !== format || !getActiveMods(room).some(isFusionMod)) return;
 
-            if (getActiveTeambuilderRoom() !== room || !getActiveMods(room).some(isFusionMod)) return;
-
-            const name = nickname !== null
-            ? String(nickname).trim()
-            : String(room.curSet?.name || '').trim();
-
-            if (name === fusionLastNickname) return;
-            fusionLastNickname = name;
+            const last = fusionLastRendered.get(room);
+            if (last?.set === set && last.name === name && last.format === format &&
+                last.species === set.species) return;
 
             refreshFusionSet(room, name);
+            fusionLastRendered.set(room, {set, name, format, species: set.species});
         });
+        fusionRefreshPending.set(room, pending);
     }
 
     let mnmSpeedListenerInstalled = false;
@@ -2468,11 +2558,17 @@
             if (!(input instanceof HTMLInputElement) || input.name !== 'nickname') return;
 
             const room = getActiveTeambuilderRoom();
-            if (!room || !getActiveMods(room).some(isFusionMod)) return;
+            if (!room?.curSet || !getActiveMods(room).some(isFusionMod)) return;
+            // Only handle the nickname editor in the current teambuilder,
+            // not a similarly named field in a popup or another room.
+            if (room.el?.contains && !room.el.contains(input)) return;
 
-            // Use the input's value directly; Showdown may not commit it to
-            // curSet.name until blur/change.
-            scheduleFusionRefresh(room, input.value);
+            const name = String(input.value || '').trim().replace(/\|/g, '');
+            // Keep all synchronous consumers of curSet (including native
+            // search handlers) consistent while the user types. The old
+            // client will save the set via nicknameChange on blur.
+            room.curSet.name = name;
+            scheduleFusionRefresh(room, name);
         };
 
         document.addEventListener('input', handler, true);
@@ -2847,12 +2943,25 @@
                 (mods.includes(MOD.ALL_MOVES) || (mods.includes(MOD.TYPEMONS) && ctx.__qolTypemons === ctx.dex.moves.get(id).type));
         }
         const Search = kind === 'move' ? window.BattleMoveSearch : window.BattleAbilitySearch;
+        const donorDisplay = isCrossEvolutionDonorFilter(ctx) && mods.includes(MOD.CROSS_EVOLUTION);
+        if (donorDisplay) return original.call(ctx, row, [[kind, target]]);
+        const into = getIntoFilterId(ctx, 'into');
+        const from = getIntoFilterId(ctx, 'from');
         const cache = ctx.__qolProviderPools || (ctx.__qolProviderPools = new Map());
-        const cacheKey = kind + ':' + species.id;
+        const cacheKey = [kind, species.id, into || '', from || '', format].join(':');
         if (cache.has(cacheKey)) return cache.get(cacheKey).has(toID(target));
         const room = getActiveTeambuilderRoom();
-        const set = room?.curSet?.species && toID(room.curSet.species) === species.id
+        let set = room?.curSet?.species && toID(room.curSet.species) === species.id
             ? {...room.curSet} : {species: species.name, name: '', item: '', ability: '', nature: '', moves: []};
+        // A filtered cross-evolution must be checked as the *pair* shown
+        // to the user, not against a stale nickname on the edited set.
+        if (mods.includes(MOD.CROSS_EVOLUTION) && into) {
+            const donor = ctx.dex.species.get(into);
+            set = {...set, species: species.name, name: donor.name};
+        } else if (mods.includes(MOD.CROSS_EVOLUTION) && from) {
+            const baseSpecies = ctx.dex.species.get(from);
+            set = {...set, species: baseSpecies.name, name: species.name};
+        }
         const probe = new Search(kind, resolveFormatKey(String(format).split('@@@')[0]) || String(format).split('@@@')[0].trim(), set);
         probe.__qolProviderMods = mods;
         probe.dex = ctx.dex;
@@ -3415,7 +3524,7 @@
     // Abilities: show the target's abilities in the ability picker.
     function crossEvolutionAbilityResults(search, base) {
         const ce = resolveCrossEvolution(search.dex, search.set);
-        if (!ce) return base();
+        if (!ce || !crossEvolutionDonorAllowed(search.dex, ce.cross)) return base();
 
         const results = withSpeciesOverrides(search.dex, ce.species, {abilities: copy(ce.cross.abilities)}, base);
 
@@ -3434,7 +3543,7 @@
         const results = base();
 
         const ce = resolveCrossEvolution(search.dex, search.set);
-        if (!ce) return results;
+        if (!ce || !crossEvolutionDonorAllowed(search.dex, ce.cross)) return results;
 
         const crossResults = withSearchSpecies(search, ce.cross.name, base);
 
@@ -3618,6 +3727,7 @@
         'type', 'color', 'move', 'ability', 'egggroup', 'tier', 'weak', 'resists', 'neutral',
         'natdex', 'hackmons', 'fe', 'recovery', 'pivot', 'priority', 'removal', 'hazards', 'into', 'from',
         'legendary', 'boxlegend', 'mythical', 'paradox', 'eeveelution', 'restricted', 'realbulk',
+        'ce', 'stage1', 'stage2', 'stage3',
     ];
     // Toggle filters take no argument: typing the keyword and picking the
     // single suggestion adds/removes the chip. Value = display label.
@@ -3637,6 +3747,10 @@
         hazards: 'Hazards',
         restricted: 'Restricted',
         realbulk: 'Real Bulk',
+        ce: 'Show Evo',
+        stage1: 'Stage 1',
+        stage2: 'Stage 2',
+        stage3: 'Stage 3',
     };
 
 
@@ -3876,14 +3990,22 @@
     // Suggestion rows for toggles that loosely prefix-match the query. Reuses
     // the 'ability' row type; the displayed text is swapped in by the
     // getResultName/renderRow patches below.
-    const CUSTOM_TOGGLE_ALIASES = {realbulk: ['totalbulk', 'bulk']};
-    const NO_NEGATE_TOGGLES = new Set(['realbulk']);
+    const CUSTOM_TOGGLE_ALIASES = {
+        realbulk: ['totalbulk', 'bulk'],
+        ce: ['crossevo', 'evos', 'evo', 'evolutions', 'crossevolution', 'cross evolution', 'showevo', 'crosses'],
+        stage1: ['1', 'stage 1', 'firststage', '1ststage', 'first stage'],
+        stage2: ['2', 'stage 2', 'secondstage', '2ndstage', 'second stage'],
+        stage3: ['3', 'stage 3', 'thirdstage', '3rdstage', 'third stage'],
+    };
+    const NO_NEGATE_TOGGLES = new Set(['realbulk', 'ce', 'stage1', 'stage2', 'stage3']);
 
     function customToggleSuggestions(query, negated = false) {
         const q = toSearchId(query);
         const rows = [];
 
+        const ceAvailable = getActiveMods().includes(MOD.CROSS_EVOLUTION);
         for (const [key, label] of Object.entries(CUSTOM_TOGGLE_FILTERS)) {
+            if (['ce', 'stage1', 'stage2', 'stage3'].includes(key) && !ceAvailable) continue;
             if (negated && NO_NEGATE_TOGGLES.has(key)) continue;
             const names = [key, label, ...(CUSTOM_TOGGLE_ALIASES[key] || [])].map(toSearchId);
             if (!q || names.some((n) => n.startsWith(q))) {
@@ -3995,6 +4117,12 @@
 
     // Does `species` satisfy one (non-negated) filter?
     function pokemonFilterMatches(search, original, row, species, type, target) {
+        if (type === 'ce' || type === 'stage1' || type === 'stage2' || type === 'stage3') {
+            if (!modsForSearch(search).includes(MOD.CROSS_EVOLUTION)) return false;
+            const stage = crossEvolutionStage(search.dex, species);
+            if (type === 'ce') return !!crossEvolutionDelta(search.dex, species);
+            return stage === Number(type.slice(-1));
+        }
         if (type === 'color') return pokemonColorName(species.color) === pokemonColorName(target);
         if (type === 'natdex' || type === 'hackmons') return pokemonFormatPool(search, type).ids.has(species.id);
         if (EFFECT_LABELS[type]) return pokemonMatchesEffectiveness(search.dex, species, type, target);
@@ -4099,36 +4227,113 @@
     }
 
     function applyGenericBans(search, results) {
-        const banFormat =
-              getActiveTeambuilderRoom()?.curTeam?.format || search.format;
-        const bans = getMergedBansForFormat(banFormat); // base list + the team's custom rules
+        const banFormat = getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+        const bans = getMergedBansForFormat(banFormat);
         if (!bans) return results;
-
-        // National Dex formats judge tiers by the National Dex tier list, not species.tier.
         const natdexFormat = fmtHas(banFormat, 'natdex', 'nationaldex');
         const tierMap = natdexFormat ? natdexTierMap(search) : null;
-        const formatTier = (sp) => {
-            if (natdexFormat) return tierMap?.get(sp.id) || '';
-            return formatSpeciesTier(search, sp);
-        };
-        const listBan = (sp) => isBannedByList(bans, sp, false, formatTier(sp));
-
-        // Pokébilities: every native ability is active at once, so a Pokémon is also out if one of
-        // them (or a pair of them) is banned. Species / tier bans still apply as usual.
+        const formatTier = (sp) => natdexFormat ? (tierMap?.get(sp.id) || '') : formatSpeciesTier(search, sp);
         const pokebilities = isPokebilitiesFormat(banFormat);
-        const abilityReason = (sp) => {
+        const reason = (sp) => {
+            if (isBannedByList(bans, sp, false, formatTier(sp))) return 'Banned';
             if (!pokebilities) return null;
             const ability = nativeBannedAbility(bans, sp);
             if (ability) return `Banned ability: ${ability}`;
             const combo = nativeBannedCombo(bans, sp);
             return combo ? `Banned ability combination: ${combo}` : null;
         };
+        // Reclassify ALL matching rows, including those already in the native
+        // 'Illegal results' bucket. Previously Sneasel in Cross Evolution
+        // stayed 'Illegal' even though it was explicitly banned by the server.
+        const allowed = [];
+        const blocked = [];
+        const seen = new Set();
+        if (!search.illegalReasons) search.illegalReasons = {};
+        for (const row of results) {
+            if (row[0] !== 'pokemon') {
+                allowed.push(row);
+                continue;
+            }
+            const sp = search.dex.species.get(row[1]);
+            const why = reason(sp);
+            if (why) {
+                if (!seen.has(row[1])) blocked.push(row);
+                seen.add(row[1]);
+                search.illegalReasons[row[1]] = why;
+            } else {
+                allowed.push(row);
+            }
+        }
+        if (!blocked.length) return results;
+        // The native illegal bucket is kept for truly unavailable species;
+        // explicit bans are separated into a labeled 'Banned' section.
+        const sections = splitIntoSections(allowed)
+            .filter((s) => s.rows.length || s.header?.[1] === 'Banned');
+        const clean = sections.flatMap((sec) => (sec.header ? [sec.header, ...sec.rows] : sec.rows));
+        return [...clean, ['header', 'Banned'], ...blocked];
+    }
 
-        return moveBannedToIllegal(
-            search, results,
-            (sp) => listBan(sp) || !!abilityReason(sp),
-            (sp) => (listBan(sp) ? 'Banned' : abilityReason(sp))
-        );
+    // Cross Evolution's restricted species are legal as ordinary Pokemon but
+    // cannot be chosen as cross-evolution donors. Gather them in their own
+    // section, regardless of whether a native search originally put them under
+    // a tier, the Illegal pool, or the CE donor pool. This also works after
+    // native text search and filters have already narrowed the result rows.
+    function groupCrossEvolutionRestricted(search, rows) {
+        if (!modsForSearch(search).includes(MOD.CROSS_EVOLUTION)) return rows;
+        const format = getActiveTeambuilderRoom()?.curTeam?.format || search.format;
+        const bans = getMergedBansForFormat(format);
+        if (!bans || (!bans.restricted.size && !bans.restrictedBase.size)) return rows;
+        const normal = [], restricted = [], banned = [], illegal = [];
+        const seen = new Set();
+        let section = 'normal';
+        let pendingHeader = null;
+        const addNormal = (row) => {
+            if (pendingHeader) { normal.push(pendingHeader); pendingHeader = null; }
+            normal.push(row);
+        };
+        for (const row of rows) {
+            if (row[0] === 'header') {
+                const heading = String(row[1]);
+                if (/^restricted(?:\b|\s*\()/i.test(heading)) section = 'restricted';
+                else if (/^banned(?:\b|\s*\()/i.test(heading)) section = 'banned';
+                else if (/illegal/i.test(heading)) section = 'illegal';
+                else { section = 'normal'; pendingHeader = row; }
+                continue;
+            }
+            if (row[0] !== 'pokemon') {
+                if (section === 'normal') addNormal(row);
+                continue;
+            }
+            const id = row[1];
+            if (seen.has(id)) continue;
+            seen.add(id);
+            const species = search.dex.species.get(id);
+            const baseId = toID(species.baseSpecies || species.name);
+            const isBanned = isBannedByList(bans, species);
+            const isRestricted = !isBanned && (bans.restricted.has(id) || bans.restrictedBase.has(baseId));
+            if (isBanned || section === 'banned') {
+                banned.push(row);
+                if (search.illegalReasons) search.illegalReasons[id] = 'Banned';
+            } else if (isRestricted) {
+                restricted.push(row);
+                // Restricted describes a donor limitation, not an illegal base.
+                if (search.illegalReasons && ['Illegal', 'Restricted'].includes(search.illegalReasons[id])) {
+                    delete search.illegalReasons[id];
+                }
+            } else if (section === 'illegal') {
+                illegal.push(row);
+            } else {
+                addNormal(row);
+            }
+        }
+        // Keep sorted/filtered legal rows intact, then append the special
+        // sections in the same order regardless of the native header layout.
+        return [
+            ...dropEmptyHeaders(normal),
+            ...(restricted.length ? [['header', 'Restricted'], ...restricted] : []),
+            ...(banned.length ? [['header', 'Banned'], ...banned] : []),
+            ...(illegal.length ? [['header', 'Illegal results'], ...illegal] : []),
+        ];
     }
 
     // Godly Gift: other Restricted mons move to an "Illegal results" section.
@@ -4199,20 +4404,32 @@
                 const isMegaConv = isConvergenceMegamons(format);
                 const explicit = isMegaConv ? explicitlyUnbannedForms(format) : new Set();
                 const legalMegas = megamonsLegalMegaIds(format, this.dex);
-                if (!legalMegas.size && !explicit.size && !bans?.unbanned?.size && !bans?.unbannedBase?.size) return rows;
+                const crossEvo = modsForSearch(this).includes(MOD.CROSS_EVOLUTION);
+                const restricted = crossEvo && !!(bans?.restricted?.size || bans?.restrictedBase?.size);
+                if (!legalMegas.size && !explicit.size && !bans?.unbanned?.size && !bans?.unbannedBase?.size && !restricted) return rows;
                 const have = new Set(rows.filter((r) => r[0] === 'pokemon').map((r) => r[1]));
-                const extra = [];
+                const unbannedExtra = [];
+                const restrictedExtra = [];
                 for (const id of Object.keys(window.BattlePokedex || {})) {
                     const sp = this.dex.species.get(id);
                     if (!sp?.exists || have.has(id)) continue;
-                    const allowed = legalMegas.has(id) || explicit.has(id) || bans?.unbanned?.has(id) ||
-                        bans?.unbannedBase?.has(toID(sp.baseSpecies || sp.name));
+                    const baseId = toID(sp.baseSpecies || sp.name);
+                    // Cross Evolution's Restricted species are legal BASES;
+                    // only using them as a nickname donor is forbidden.
+                    const restrictedBase = restricted &&
+                        (bans.restricted.has(id) || bans.restrictedBase.has(baseId));
+                    const explicitlyAllowed = legalMegas.has(id) || explicit.has(id) ||
+                        bans?.unbanned?.has(id) || bans?.unbannedBase?.has(baseId);
+                    const allowed = restrictedBase || explicitlyAllowed;
                     if (sp.gen > this.dex.gen && !allowed) continue;
                     if (allowed && (!bans || !isBannedByList(bans, sp))) {
-                        extra.push(['pokemon', id]);
+                        (restrictedBase ? restrictedExtra : unbannedExtra).push(['pokemon', id]);
                     }
                 }
-                return extra.length ? [...rows, ['header', 'Explicitly unbanned'], ...extra] : rows;
+                return [...rows,
+                    ...(unbannedExtra.length ? [['header', 'Explicitly unbanned'], ...unbannedExtra] : []),
+                    ...(restrictedExtra.length ? [['header', 'Restricted'], ...restrictedExtra] : []),
+                ];
             });
         patchMethod(window.BattlePokemonSearch?.prototype, 'getTier', '__qolPoolTierPatched', (original) =>
             function (species) {
@@ -4252,11 +4469,20 @@
             this.__qolFromId = findChip('from');
             this.__qolStoneId = findChip('stone');
             this.__qolRealBulk = Array.isArray(filters) && filters.some((f) => f[0] === 'realbulk');
+            // `sort` is a method of BattlePokemonSearch, NOT the outer DexSearch.
+            // Keep the display mode here before calling Showdown's native getResults.
+            this.__qolShowEvo = Array.isArray(filters) && filters.some(([type]) => type === 'ce');
+            this.__qolCeStage = Array.isArray(filters)
+                ? Number(filters.find(([type]) => ['stage1', 'stage2', 'stage3'].includes(type))?.[0].slice(-1)) || 0 : 0;
             this.__qolTypemons = modsForSearch(this).includes(MOD.TYPEMONS)
                 ? typemonsType(getActiveTeambuilderRoom(), this) : null;
 
-            // Positive chips select a native base pool; all pool chips then AND
-            // together as membership filters. Negative chips never widen the pool.
+            // A CE browsing chip switches to the eligible evolution-target
+            // pool; unlike the ordinary CE base-species list, this contains
+            // Stage 2 and Stage 3 donor species and displays /showevo deltas.
+            // Keep the pool separate so removing the chip restores the native list.
+            const ceDonorBrowse = modsForSearch(this).includes(MOD.CROSS_EVOLUTION) &&
+                Array.isArray(filters) && filters.some(([type]) => ['ce', 'stage1', 'stage2', 'stage3'].includes(type));
             const poolKind = ['natdex', 'hackmons'].find((kind) =>
                 Array.isArray(filters) && filters.some(([type]) => type === kind)) || null;
             const pool = poolKind ? pokemonFormatPool(this, poolKind) : null;
@@ -4265,6 +4491,37 @@
                 this.__qolPokemonPool = pool;
             }
             if (pool && !this.baseResults) this.baseResults = pool.rows;
+            if (ceDonorBrowse) {
+                if (!this.__qolCeDonorRows || this.__qolCeDonorKey !== providerFormat) {
+                    this.__qolCeDonorKey = providerFormat;
+                    this.__qolCeEffectiveRules = null;
+                    this.__qolCeDonorRows = [['header', 'Cross Evolution Donors']];
+                    for (const id of Object.keys(window.BattlePokedex || {})) {
+                        const sp = this.dex.species.get(id);
+                        if (!sp?.exists || sp.id !== id || !crossEvolutionStage(this.dex, sp) || sp.battleOnly) continue;
+                        // Keep banned/restricted targets visible for their
+                        // correct labels, but never include cross-gen/CAP/etc.
+                        const rules = this.__qolCeEffectiveRules ||
+                            (this.__qolCeEffectiveRules = resolveClauseRules(this.__qolProviderBans || emptyBanSections(), providerFormat));
+                        const natdex = isNationalDexFormat(providerFormat) || rules.has('natdexmod');
+                        if (sp.gen > this.dex.gen || sp.isNonstandard === 'Future' ||
+                            (sp.isNonstandard === 'Past' && !natdex) ||
+                            (sp.isNonstandard === 'CAP' && !rules.has('+tag:cap')) ||
+                            (sp.isNonstandard === 'Unobtainable' && sp.tier === 'Unreleased')) continue;
+                        this.__qolCeDonorRows.push(['pokemon', id]);
+                    }
+                }
+                if (this.__qolCeDonorPool !== this.__qolCeDonorRows) {
+                    clearSearchCache(this);
+                    this.__qolCeDonorPool = this.__qolCeDonorRows;
+                }
+                this.baseResults = this.__qolCeDonorRows;
+                this.baseIllegalResults = [];
+            } else if (this.__qolCeDonorPool) {
+                this.__qolCeDonorPool = null;
+                clearSearchCache(this);
+                if (pool) this.baseResults = pool.rows;
+            }
 
             // Dynamic bans must not stick after a team/rule change. Keep the
             // client's native reasons separately from reasons added below.
@@ -4285,6 +4542,7 @@
             }
 
             results = applyGenericBans(this, results);
+            results = groupCrossEvolutionRestricted(this, results);
             return applyGodlyGiftLegality(this, results);
         }
                           );
@@ -5072,16 +5330,22 @@
 
     function pokemonTextSearch(engine, original, query) {
         const poolFilters = (engine.filters || []).filter(([type]) =>
-            ['natdex', 'hackmons'].includes(baseFilterType(type)));
+            ['natdex', 'hackmons', 'ce', 'stage1', 'stage2', 'stage3'].includes(baseFilterType(type)));
         const searchFilters = (engine.filters || []).filter(([type]) =>
-            ['natdex', 'hackmons', 'color'].includes(baseFilterType(type)));
+            ['natdex', 'hackmons', 'color', 'ce', 'stage1', 'stage2', 'stage3', 'move', 'ability', 'into', 'from']
+                .includes(baseFilterType(type)));
         // Native textSearch bypasses getResults/filter. Keep pool membership
         // and legality in sync while typing as well as in the blank-query list.
         if (poolFilters.length || engine.typedSearch?.__qolPokemonPool) {
             engine.typedSearch.getResults(engine.filters, null, false);
         }
-        const nativeSearch = (text) => dropEmptyHeaders((original.call(engine, text) || []).filter((row) =>
-            row[0] !== 'pokemon' || !searchFilters.length || engine.typedSearch.filter(row, searchFilters)));
+        const nativeSearch = (text) => {
+            const rows = dropEmptyHeaders((original.call(engine, text) || []).filter((row) =>
+                row[0] !== 'pokemon' || !searchFilters.length || engine.typedSearch.filter(row, searchFilters)));
+            // Typed searches bypass BattlePokemonSearch.getResults. Classify
+            // server-banned species here too, instead of showing "Illegal".
+            return applyGenericBans(engine.typedSearch, rows);
+        };
         const raw = String(query || '').trim();
         const negated = raw.startsWith('!');
         const q = (negated ? raw.slice(1) : raw).trim().toLowerCase();
@@ -5202,6 +5466,14 @@
 
             if (CUSTOM_TOGGLE_FILTERS[key]) {
                 const negated = isNegatedFilterType(entry[0]) || engine.__qolNegateMode;
+                if (['ce', 'stage1', 'stage2', 'stage3'].includes(key)) {
+                    if (negated || !getActiveMods().includes(MOD.CROSS_EVOLUTION)) return false;
+                    if (key.startsWith('stage')) {
+                        // Exactly one stage at a time, independently of Show Evo.
+                        engine.filters = (engine.filters || []).filter(([type]) =>
+                            !['stage1', 'stage2', 'stage3'].includes(type));
+                    }
+                }
                 return addPokemonSearchFilter(engine, key, CUSTOM_TOGGLE_FILTERS[key], negated);
             }
         }
@@ -5636,6 +5908,14 @@
             const sortBy = (statsFor) =>
             results.sort((a, b) => (valueOf(statsFor(b[1])) - valueOf(statsFor(a[1]))) * order);
 
+            if ((this.__qolShowEvo || this.__qolCeStage) && getActiveMods().includes(MOD.CROSS_EVOLUTION)) {
+                return sortBy((id) => {
+                    const species = dex.species.get(id);
+                    return this.__qolShowEvo
+                        ? crossEvolutionDelta(dex, species)?.stats || species.baseStats
+                        : species.baseStats;
+                });
+            }
             if (this.__qolIntoId) {
                 return sortBy((id) => {
                     const sp = dex.species.get(id);
@@ -5674,15 +5954,37 @@
             let shown = pokemon;
             const call = (mon, err) => {
                 shown = mon;
+                const reason = this.engine?.typedSearch?.illegalReasons?.[mon?.id];
+                if (reason === 'Banned' && typeof err === 'string' &&
+                    /<em>\s*Banned\s*<\/em>/i.test(err)) err = null;
                 return original.call(this, mon, matchStart, matchLength, err, attrs);
             };
-            const finish = (html) =>
-            hasRealBulk(this.engine) && shown?.baseStats
-            ? applyRealBulkToRowHtml(html, shown.baseStats)
-            : html;
+            const finish = (html) => {
+                if (hasRealBulk(this.engine) && shown?.baseStats) {
+                    html = applyRealBulkToRowHtml(html, shown.baseStats);
+                }
+                return html;
+            };
 
             if (pokemon) {
                 const dex = this.engine.dex;
+                if (!!getIntoFilterId(this.engine, 'ce') && getActiveMods().includes(MOD.CROSS_EVOLUTION)) {
+                    const delta = crossEvolutionDelta(dex, pokemon);
+                    if (delta) {
+                        const shown = Object.assign({}, pokemon, {baseStats: delta.stats, types: delta.types});
+                        let html = finish(call(shown, errorMessage));
+                        html = html.replace(/(<span class="col numcol">)[\s\S]*?(<\/span>)/,
+                            (_, open, close) => open + `S${delta.stage}` + close);
+                        // The native renderer packs type icons leftward. Keep a
+                        // transparent first-slot icon when only slot 2 changes.
+                        if (!delta.typeSlots[0] && delta.typeSlots[1]) {
+                            const icon = window.Dex?.getTypeIcon?.(delta.typeSlots[1]) || '';
+                            html = html.replace(/(<span class="col typecol">)/,
+                                (_, open) => open + `<span style="visibility:hidden">${icon}</span>`);
+                        }
+                        return html;
+                    }
+                }
                 const intoId = getIntoFilterId(this.engine);
                 const fromId = getIntoFilterId(this.engine, 'from');
 
@@ -6154,12 +6456,15 @@
         refreshSearchUi(room);
     }
 
-    // Redraws the held-item icon in the set's icon row from curSet.item.
+    // Rebuild only the held-item icon: native updatePokemonSprite changes the
+    // background of an existing .itemicon, but does not recreate one if an
+    // out-of-generation forme's editor has rendered it without that element.
     function refreshItemIcon(room) {
-        const item = room?.curSet?.item;
         const cell = room?.$?.('.setrow-icons .setcell:not(.setcell-typeicons)');
         if (!cell?.length) return;
-        cell.html(item ? `<span class="itemicon" style="${Dex.getItemIcon(item)}"></span>` : '');
+        const name = room?.curSet?.item || '';
+        const item = name && (room.curTeam?.dex?.items?.get?.(name) || Dex.items?.get?.(name));
+        cell.html(`<span class="itemicon"${item?.exists ? ` style="${Dex.getItemIcon(item)}"` : ''}></span>`);
     }
 
     function patchChartSet() {
@@ -6204,7 +6509,6 @@
 
                 this.save?.();
 
-                fusionLastNickname = null;
                 scheduleFusionRefresh(this, nickname);
             }
 
@@ -6213,7 +6517,13 @@
             if (mods.includes(MOD.CAMOMONS) || (hasMnm && chartName === 'item')) {
                 refreshTypeIcons(this);
             }
-            if (mods.includes(MOD.FORTEMONS) && chartName === 'item') refreshItemIcon(this);
+            // Megamons permits forme species that did not exist in the team's
+            // original generation. Their native item-icon node can be missing;
+            // refresh it immediately after committing an item selection.
+            if (chartName === 'item' &&
+                (mods.includes(MOD.FORTEMONS) || isConvergenceMegamons(this.curTeam?.format))) {
+                refreshItemIcon(this);
+            }
             if (hasMnm && chartName === 'pokemon' && this.curSet && stoneId) {
                 const stone = this.curTeam?.dex?.items?.get(stoneId);
 
@@ -10976,6 +11286,7 @@
     window.addEventListener('beforeunload', usageCleanUrl);
     window.addEventListener('pagehide', usageCleanUrl);
     installNatureSwapCamomonsListener();
+    installFusionNicknameListener();
     installStoneSortListener();
     installMnmSpeedNoteListener();
     installDomDecorators();
