@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      19.0
+// @version      17.3.2
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -2399,7 +2399,13 @@
     }
 
     function getIntoFilterId(engine, kind = 'into') {
-        for (const list of [engine?.filters, engine?.typedSearch?.filters]) {
+        const parent = getActiveTeambuilderRoom()?.search?.engine;
+        // The actual filter() callback runs on BattlePokemonSearch, while
+        // all chips live on DexSearch. Use the current invocation first,
+        // and the owning parent only when the typed search is this object.
+        const lists = [engine?.__qolActiveFilters, engine?.filters, engine?.typedSearch?.filters];
+        if (parent && (parent === engine || parent.typedSearch === engine)) lists.push(parent.filters);
+        for (const list of lists) {
             if (!Array.isArray(list)) continue;
             const f = list.find((entry) => entry[0] === kind);
             if (f) return f[1];
@@ -2943,11 +2949,50 @@
                 (mods.includes(MOD.ALL_MOVES) || (mods.includes(MOD.TYPEMONS) && ctx.__qolTypemons === ctx.dex.moves.get(id).type));
         }
         const Search = kind === 'move' ? window.BattleMoveSearch : window.BattleAbilitySearch;
-        const donorDisplay = isCrossEvolutionDonorFilter(ctx) && mods.includes(MOD.CROSS_EVOLUTION);
-        if (donorDisplay) return original.call(ctx, row, [[kind, target]]);
         const into = getIntoFilterId(ctx, 'into');
         const from = getIntoFilterId(ctx, 'from');
+        const donorDisplay = isCrossEvolutionDonorFilter(ctx) && mods.includes(MOD.CROSS_EVOLUTION);
+        // A CE donor-browser chip must not suppress Into/From's shared moves.
+        if (donorDisplay && !into && !from) return original.call(ctx, row, [[kind, target]]);
         const cache = ctx.__qolProviderPools || (ctx.__qolProviderPools = new Map());
+
+        // Cross Evolution's validator (config/formats.ts) checks whether the
+        // move is learned by EITHER the base species OR the named evolution.
+        // Never infer this from the currently edited set's nickname, or from
+        // a provider-expanded set search: both are mutable and can be stale.
+        // Query each unmodified *native* learnset in the selected generation.
+        if (kind === 'move' && mods.includes(MOD.CROSS_EVOLUTION) && (into || from)) {
+            const baseSpecies = from ? ctx.dex.species.get(from) : species;
+            const donorSpecies = into ? ctx.dex.species.get(into) : species;
+            if (!baseSpecies?.exists || !donorSpecies?.exists ||
+                !crossEvolveView(ctx.dex, baseSpecies, donorSpecies.id)) return false;
+            const move = ctx.dex.moves.get(id);
+            if (!moveAllowedByGeneration(ctx.dex, move, format)) return false;
+            const bans = ctx.__qolProviderBans === undefined ? getMergedBansForFormat(format) : ctx.__qolProviderBans;
+            if (bans?.moves?.has(id)) return false;
+
+            const formatKey = resolveFormatKey(String(format).split('@@@')[0]) ||
+                String(format).split('@@@')[0].trim();
+            const lookup = (mon) => {
+                const key = ['ce-native', 'move', mon.id, formatKey].join(':');
+                if (cache.has(key)) return cache.get(key);
+                const probe = new Search('move', formatKey, {species: mon.name, name: '', item: '', ability: '', moves: []});
+                probe.dex = ctx.dex;
+                probe.species = mon.id;
+                // Directly use Showdown's original search function. The
+                // providers (which can depend on the edited set) are NOT
+                // supposed to influence whether the donor learns a move.
+                let native = Search.prototype.getBaseResults;
+                while (native.__original) native = native.__original;
+                const moves = new Set(native.call(probe)
+                    .filter((r) => r[0] === 'move').map((r) => r[1]));
+                cache.set(key, moves);
+                return moves;
+            };
+            // A restricted move can be learned natively by a base/donor;
+            // restriction means it cannot be gained just through an OM.
+            return lookup(baseSpecies).has(id) || lookup(donorSpecies).has(id);
+        }
         const cacheKey = [kind, species.id, into || '', from || '', format].join(':');
         if (cache.has(cacheKey)) return cache.get(cacheKey).has(toID(target));
         const room = getActiveTeambuilderRoom();
@@ -4144,6 +4189,11 @@
             const species = this.dex.species.get(row[1]);
             if (!species?.exists) return false;
 
+            // Active call owns the freshest filters, regardless of how the
+            // parent's filter UI commits chip state. Avoid leaking context.
+            const previousFilters = this.__qolActiveFilters;
+            this.__qolActiveFilters = filters;
+            try {
             // Stone chip: judge every other filter on the stone-modified mon.
             const stoneId = filters.find((f) => f[0] === 'stone')?.[1];
             const view = stoneId ? mnmStoneView(this.dex, species, stoneId) : null;
@@ -4170,6 +4220,9 @@
             }
 
             return true;
+            } finally {
+                this.__qolActiveFilters = previousFilters;
+            }
         }
                           );
     }
@@ -10697,14 +10750,35 @@
         return clampBaseStats(stats);
     }
 
-    function syncCalcOmForm(pokeInfo) {
+    function calcOmFormKey(pokeInfo, mod) {
+        const side = calcOmSide(pokeInfo);
+        // Only values that actually affect an OM's *form* belong in this key.
+        // Items, moves (except Camomons), abilities, EVs, IVs, and boosts must
+        // never cause the calculator to reset a manually edited set.
+        const parts = [calcOmGenNumber(), calcOmFormSpeciesName(pokeInfo), mod];
+        if (mod === 'franticfusions' || mod === 'godlygift') {
+            parts.push(document.querySelector(`#qol-om-source-${side}`)?.value || '');
+        }
+        if (mod === 'godlygift') {
+            parts.push(document.querySelector(`#qol-om-slot-${side}`)?.value || '');
+        }
+        if (mod === 'natureswap') parts.push(pokeInfo.find('.nature').val() || '');
+        if (mod === 'camomons') {
+            parts.push(...pokeInfo.find('.move-selector').toArray().slice(0, 2).map(el => el.value));
+            parts.push(...pokeInfo.find('.move-type').toArray().slice(0, 2).map(el => el.value));
+        }
+        return JSON.stringify(parts);
+    }
+
+    function syncCalcOmForm(pokeInfo, {force = false} = {}) {
         if (!pokeInfo?.length || pokeInfo[0].__qolOmSyncing) return;
 
         const mod = calcOmSelected();
-
         const formMod = mod && !CALC_OM_ABILITY_MODES.has(mod) ? mod : '';
         // Nothing to apply and nothing to undo.
         if (!formMod && !pokeInfo.data('qolOmApplied')) return;
+        const key = calcOmFormKey(pokeInfo, formMod);
+        if (!force && pokeInfo.data('qolOmFormKey') === key) return;
 
         const genData = calcOmGeneration();
         const native = calcOmNativeForm(pokeInfo, genData);
@@ -10726,13 +10800,15 @@
 
             if (typeof window.calcHP === 'function') window.calcHP(pokeInfo);
             if (typeof window.calcStats === 'function') window.calcStats(pokeInfo);
-            pokeInfo.find('.base, .type1, .type2').trigger('change');
+            // Do not synthesize change events here: the calculator's own
+            // handlers can reset the entire selected set when those fire.
         } finally {
             delete pokeInfo[0].__qolOmSyncing;
         }
 
         if (formMod) pokeInfo.data('qolOmApplied', formMod);
         else pokeInfo.removeData('qolOmApplied');
+        pokeInfo.data('qolOmFormKey', key);
     }
 
     function installCalcOm() {
@@ -10963,13 +11039,19 @@
                 const pokeInfo = window.$(side);
                 pokeInfo.find('.ability option[data-qol-om="true"]').remove();
                 const result = originalAutoUpdateStats.call(this, side, ...args);
-                if (pokeInfo.length) syncCalcOmForm(pokeInfo);
+                if (pokeInfo.length) syncCalcOmForm(pokeInfo, {force: true});
                 return result;
             };
 
             const refreshForms = (autoSide) => {
                 const callsBefore = calcOmSupport.calls;
-                for (const side of ['#p1', '#p2']) window.autoUpdateStats(side);
+                // autoUpdateStats is a *set-loader*, not a safe way to recalculate.
+                // It resets user-selected moves, items, abilities and custom stats.
+                // Only the calculator's native species-change handler should call it.
+                for (const side of ['#p1', '#p2']) {
+                    const form = window.$(side);
+                    if (form.length) syncCalcOmForm(form);
+                }
                 // Weather/terrain from pooled abilities is a switch-in effect: only the side
                 // that just changed may set it, never every refresh (that clobbered manual picks).
                 if (calcOmAbilityMode() && typeof autoSide === 'string') calcOmAutoSetField(autoSide);
@@ -11056,8 +11138,12 @@
                     return;
                 }
                 if (event.target.matches('#p1 .move-selector, #p2 .move-selector, #p1 .move-type, #p2 .move-type')) {
-                    window.setTimeout(refreshForms, 0);
-                } else if (event.target.matches('#p1 .nature, #p2 .nature, #p1 .qol-calc-om-fields select, #p2 .qol-calc-om-fields select')) {
+                    // Only Camomons changes base typing when a move changes.
+                    if (calcOmSelected() === 'camomons') window.setTimeout(refreshForms, 0);
+                } else if (event.target.matches('#p1 .nature, #p2 .nature')) {
+                    // Only Nature Swap changes base stats when nature changes.
+                    if (calcOmSelected() === 'natureswap') refreshForms();
+                } else if (event.target.matches('#p1 .qol-calc-om-fields select, #p2 .qol-calc-om-fields select')) {
                     refreshForms();
                 }
             }, true);
