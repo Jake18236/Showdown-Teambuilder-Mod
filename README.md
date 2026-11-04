@@ -1,98 +1,117 @@
 # Pokémon Showdown Teambuilder Mod
 
-A Tampermonkey userscript that adds some features that always annoyed me. Mostly for OMs.
+A Tampermonkey/Userscripts userscript that adds quality of life features to [Pokémon Showdown](https://play.pokemonshowdown.com/), mostly for OMs. It makes custom formats easier to build for by showing modified stats, typings, abilities, and movepools directly in the teambuilder instead of making you work them out yourself.
 
-## Installation for Chrome, Firefox, Edge
+It also adds extra search commands, custom format tools, and support for the [Pokémon Showdown damage calculator](https://calc.pokemonshowdown.com/).
+
+## Installation
+
+### Chrome, Firefox, and Edge
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
-2. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**.
+2. Open the **[installation link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**.
 3. Click **Install** in Tampermonkey.
-4. Open Pokémon Showdown.
+4. Open [Pokémon Showdown](https://play.pokemonshowdown.com/).
 
-## Installation for Safari (MacOS and iOS)
+### Safari (macOS and iOS)
 
-1. Download Userscripts on the App Store
-2. Enable the extension in settings
-3. Click the **[Installation Link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**, click view, and install the code as an userscript.
+1. Install **Userscripts** from the App Store.
+2. Enable its Safari extension in Settings and give it permission to run on Pokémon Showdown.
+3. Open the **[installation link](https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js)**.
+4. Choose **View** and install the script in Userscripts.
+5. If the above steps do not work, ask chatgpt or smth idk.
 
+The script also runs on Smogtours and the Pokémon Showdown damage calculator.
 
+## Features
 
-## Some features
+### Extra teambuilder search commands
 
-**Global Commands**
-- Weak [type]
-- Resists [type]
-- Neutral [type]
-- Pivot
-- Recovery (Life Dew does not count)
-- FE (fully evolved)
-- Priority
-- Natdex (its actually just PH legality though)
-- Negate command "!" that works for all filters (eg !fire, !weak ice, !FE)
-- Legendary, Mythical, Paradox, and also Eeveelution
+Use these in Pokémon search to find things that Showdown's normal filters don't cover:
 
-**For Alphabet Cup**
-- Gives all moves naturally and allows search
+- `weak [type]`, `resists [type]` — filter by type matchups.
+- `pivot`, `recovery`, `priority` — finds pokemon with useful move categories. 
+- `fe` — fully evolved Pokémon.
+- `natdex` — the script's extended National Dex / historical legality search.
+- `legendary`, `mythical`, `paradox`, `eeveelution` — Pokémon groups.
+- `!` — negate a supported search, such as `!fire`, `!weak ice`, or `!fe`.
 
-**For Bad N Boosted**
-- Automatically applies boosts in base stats, real stats, visuals, and search. 
-- Speed tooltips
+Filters can be combined with the regular move, ability, type, and stat searches.
 
-**For Camomons**
-- Sets type as first two slots
+### Cross Evolution
 
-**For Convergence**
-- Shows all added moves and abilities
-- Icons for who added them
+- Displays the resulting base stats, typing, and abilities when you nickname a Pokémon after an evolution donor.
+- Combines the base Pokémon's **and** donor's movepools in move searches.
+- `into [Pokémon]` — show base Pokémon that can evolve into the named donor.
+- `[Pokémon] into` — show evolution donors for the named base Pokémon.
+- `stage1`, `stage2`, `stage3` (or `1`, `2`, `3`) — filter by evolutionary stage.
+- `showevo` / `ce` / `crossevo` / `evo` — display evolution stat gains and type changes, similar to Showdown's `/showevo` command.
+- **`Full List`** — browse all eligible base Pokémon + donor combinations as individual search results. Each row shows the two Pokémon icons, resulting stats, typing, abilities, and BST. Click a combination to select the base Pokémon with the donor already set as its nickname.
+- Sort Full List by the resulting stats, or narrow it using moves, abilities, types, and the other CE filters.
+- Distinguishes **Restricted** evolution donors from **Banned** Pokémon.
+- Includes Speed-related battle tooltip support.
 
-**For Cross Evolution**
-- Automatically applies cross evolved features
-- "into [pokemon]" shows what everything would become if cross evolved into that Pokémon.
-- "[pokemon] into" shows what that Pokémon could become.
-- (those commands make more sense when you actually try them)
-- Speed tooltips
+Full List is very laggy since its rendering 82,000+ pokemon (and their movesets)
 
-**For Flipped**
-- Applies flipped base stats (HP/Atk/Def/SpA/SpD/Spe → Spe/SpD/SpA/Def/Atk/HP) in base stats, real stats, visuals, and search.
-- Speed tooltips
+### Convergence and Convergence Megamons
 
-**For Godly Gift:**
-- Applies the God's base stat to the appropriate team position.
-- Supports all donated stats.
-- Updates displayed base stats.
-- Prevents additional Restricted Pokémon from appearing as legal team members once a God has been selected.
+- Shows moves and abilities shared by Pokémon with matching types.
+- Adds donor icons so you can see which Pokémon supply each move or ability.
+- Uses format bans when deciding which Pokémon can contribute to shared movepools.
+- Supports the extra Mega Evolutions made legal by Convergence Megamons, including item selection and item icons.
 
-**For Inheritance**
-- Nickname = donor. The donor's movepool and abilities replace the Pokémon's own.
+### Mix and Mega
 
-**For Mix N Mega:**
-- Calculates Pokémon stats after Mega Evolution.
-- Applies the appropriate Mega Stone changes.
-- Displays modified base stats in the Teambuilder.
-- Calculates final stats using the modified stats.
-- Accounts for Mix and Mega's Speed-related mechanics.
-- Base speed pre-mega is noted
+- Applies the selected Mega Stone's stat and type changes to teambuilder displays and stat calculations.
+- Displays modified base stats and accounts for pre-Mega Speed when relevant.
+- Adds Speed information to battle tooltips.
 
-**Nature Swap**
-- The nature's boosted and lowered stats swap base stat values. Updates live when you change the nature.
+### Godly Gift
 
-**For Scalemons**
-- Turns gen9aaaubers into Scalemons
-- Displays all stats scaled
-- Speed Tooltips
+- Applies the designated God's donated base stat according to team position.
+- Updates the displayed base stats and calculated stats.
+- Accounts for restricted Pokémon when selecting the team's God.
 
-**For Tier Shift:**
-- Automatically applies Tier Shift's base-stat boosts.
-- Displays the modified stats in the Teambuilder.
-- Supports Tier Shift stat boosts
-- Makes stat sorting/search results account for the modified stats.
-- Supports Tier Shift AAA's dynamic banlist that is not client side for some reason.
+### Bad 'n Boosted
 
-**For 350 Cup**
-- Doubles all base stats (HP included) of Pokémon with BST ≤ 350 in base stats, real stats, visuals, and search.
-- Speed tooltips
+- Applies its base-stat boosts to the Pokémon's displayed and calculated stats.
+- Updates stat-based search and sorting, with Speed tooltip support.
 
-## Images
+### Tier Shift
+
+- Applies tier-based stat boosts to the teambuilder and stat calculations.
+- Uses modified stats in searches and sorting.
+- Supports server-provided format bans, including mashups.
+
+### Other supported metagames
+
+- **Alphabet Cup:** Expands movepools according to the Pokémon's name and evolutionary line, while respecting generation and format restrictions.
+- **Camomons:** Changes typing based on the first two moves.
+- **Flipped:** Reverses base stats.
+- **350 Cup:** Doubles the stats correctly.
+- **Scalemons:** Displays scaled base stats, with Speed tooltip support.
+- **Nature Swap:** Swaps correctly
+- **Inheritance:** Uses the nickname as an ability/movepool donor.
+- **Frantic Fusions, Re-Evolution, Pokébilities, Shared Power, Force of the Fallen, and other supported custom-format combinations:** Some additional stuff.
+
+### Custom formats and legality
+
+- Supports importing and using custom challenge codes with `@@@` rules.
+- Recognizes format clauses, modifiers, bans, unbans, and restrictions, including rules received from Showdown's `/formathelp` responses.
+- Separates **Banned**, **Restricted**, and **Illegal** Pokémon in supported search results where applicable.
+- Accounts for generation-specific move availability and special rules like Sleep Moves Clause.
+- Supports combinations of multiple OMs.
+
+Some complicated rule interactions still require Showdown's actual server-side team validator; the script isn't a replacement for server validation.
+
+### Other tools
+
+- **Damage calculator integration:** Applies supported OM effects to calculator stats and typing.
+- **Battle tooltips:** Additional modified stat and Speed information in supported formats.
+- **Self-challenge:** Tools for testing teams/mechanics against yourself without incognito windows.
+- **Usage stats and custom-format utilities:** Extra teambuilder utilities for experimenting with nonstandard formats.
+
+## Screenshots
 
 <img width="402" height="390" alt="Screenshot 2026-09-19 142100" src="https://github.com/user-attachments/assets/35682ef8-8e9a-422c-9779-40b86ce72121" />
 <img width="344" height="347" alt="Screenshot 2026-09-23 190824" src="https://github.com/user-attachments/assets/e7f9c764-fa92-458d-9fd0-30e5fb6dfa63" />
@@ -104,5 +123,3 @@ A Tampermonkey userscript that adds some features that always annoyed me. Mostly
 <img width="404" height="339" alt="Screenshot 2026-09-29 211715" src="https://github.com/user-attachments/assets/8ee2d838-9577-4381-964e-c03eff493e97" />
 <img width="403" height="402" alt="Screenshot 2026-09-30 085614" src="https://github.com/user-attachments/assets/5c9e071e-eafb-40ce-b0f5-0c4d28016387" />
 <img width="412" height="402" alt="Screenshot 2026-09-30 085500" src="https://github.com/user-attachments/assets/153dd965-d45f-47d1-8b82-3729382a130d" />
-
-  
