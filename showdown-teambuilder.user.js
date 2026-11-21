@@ -2,7 +2,7 @@
 // @name         Pokémon Showdown Teambuilder QOL
 // @author       jl
 // @namespace    https://github.com/Jake18236/showdown-teambuilder-mod
-// @version      22.9.0
+// @version      22.9.1
 // @description  Adds Teambuilder and damage calculator support for some OMs
 // @match        https://play.pokemonshowdown.com/*
 // @match        https://smogtours.psim.us/*
@@ -17,6 +17,16 @@
 // @downloadURL  https://github.com/Jake18236/Showdown-Teambuilder-Mod/releases/latest/download/showdown-teambuilder.user.js
 // ==/UserScript==
 
+// Maintains native Showdown controls. Self-battles run locally; online team validation uses the server.
+//
+// FILE LAYOUT
+//   Core: constants and mod metadata, room / patch helpers, server banlists,
+//         stat and type transforms, search providers and filters, teambuilder
+//         patches, battle patches, DOM decorators, and boot.
+//   Features: self-challenge, custom format import, usage stats, and calculator OMs.
+// Tampermonkey grants can expose page objects on window without making
+// their names (app, Dex, Storage, etc.) globals in the userscript realm.
+// Resolve both qualified and bare client globals against the real page.
 (function (__qolPageWindow, __qolResourceReader) {
     with (__qolPageWindow) {
 (function () {
@@ -27,7 +37,7 @@
     const LOG = '[Teambuilder QOL]';
     // Multiple enabled copies must not register another observer/listener tree.
     if (window.__showdownTeambuilderQolRuntime) return;
-    window.__showdownTeambuilderQolRuntime = Object.freeze({version: '22.9.0'});
+    window.__showdownTeambuilderQolRuntime = Object.freeze({version: '22.9.1'});
 
     const IS_DAMAGE_CALC = location.hostname === 'calc.pokemonshowdown.com';
 
@@ -6879,6 +6889,16 @@
     }
 
     const CORE_MOVE_TOGGLES = {
+        multihit: {
+            label: 'Multihit', aliases: ['multi hit', 'multi-hit', 'multiplehits'],
+            desc: 'Moves that strike more than once per use',
+            test: (m) => {const hits=moveField(m,'multihit');return Array.isArray(hits)?hits[1]>1:typeof hits==='number'&&hits>1;},
+        },
+        technician: {
+            label: 'Technician', aliases: ['tech'],
+            desc: 'Damaging moves with listed power of 1–60 per hit; conditional power may differ in battle',
+            test: (m) => isDamaging(m)&&m.basePower>0&&m.basePower<=60&&!moveField(m,'damage')&&!moveField(m,'damageCallback'),
+        },
         new: {
             label: 'New', aliases: ['newmoves'],
             desc: 'Moves added by this format beyond the Pokémon’s native movepool',
@@ -9909,7 +9929,7 @@ function identifyLocalBench(battle,snapshot){
 
 // Data-only multiplayer protocol. No payload is evaluated as code or passed to
 // the application command dispatcher. Engine mutations stay in its Worker.
-const FC_VERSION='22.9.0',FC_PREFIX='[QOL-FC1]',FC_PREF='qol-fakechallenges-disabled';
+const FC_VERSION='22.9.1',FC_PREFIX='[QOL-FC1]',FC_PREF='qol-fakechallenges-disabled';
 function fcFormat(value){
  let text=String(value||'').trim();
  if(!text||text.length>12000||/[\r\n|\x00]/.test(text))throw Error('Enter a valid challenge code.');
